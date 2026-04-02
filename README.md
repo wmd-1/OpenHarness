@@ -73,6 +73,95 @@ OpenHarness is an open-source Python implementation designed for **researchers, 
 
 ---
 
+## ✨ OpenHarness's Key Harness Features
+
+<table align="center" width="100%">
+<tr>
+<td width="20%" align="center" style="vertical-align: top; padding: 15px;">
+
+<h3>🔄 Agent Loop</h3>
+
+<div align="center">
+  <img src="https://img.shields.io/badge/Engine-06B6D4?style=for-the-badge&logo=lightning&logoColor=white" alt="Engine" />
+</div>
+
+<img src="assets/scene-agentloop.png" width="140">
+
+<p align="center"><strong>• Streaming Tool-Call Cycle</strong></p>
+<p align="center"><strong>• API Retry with Exponential Backoff</strong></p>
+<p align="center"><strong>• Parallel Tool Execution</strong></p>
+<p align="center"><strong>• Token Counting & Cost Tracking</strong></p>
+
+</td>
+<td width="20%" align="center" style="vertical-align: top; padding: 15px;">
+
+<h3>🔧 Harness Toolkit</h3>
+
+<div align="center">
+  <img src="https://img.shields.io/badge/43+_Tools-10B981?style=for-the-badge&logo=toolbox&logoColor=white" alt="Toolkit" />
+</div>
+
+<img src="assets/scene-toolkit.png" width="140">
+
+<p align="center"><strong>• 43 Tools (File, Shell, Search, Web, MCP)</strong></p>
+<p align="center"><strong>• On-Demand Skill Loading (.md)</strong></p>
+<p align="center"><strong>• Plugin Ecosystem (Skills + Hooks + Agents)</strong></p>
+<p align="center"><strong>• Compatible with anthropics/skills & plugins</strong></p>
+
+</td>
+<td width="20%" align="center" style="vertical-align: top; padding: 15px;">
+
+<h3>🧠 Context & Memory</h3>
+
+<div align="center">
+  <img src="https://img.shields.io/badge/Persistent-8B5CF6?style=for-the-badge&logo=brain&logoColor=white" alt="Context" />
+</div>
+
+<img src="assets/scene-context.png" width="140">
+
+<p align="center"><strong>• CLAUDE.md Discovery & Injection</strong></p>
+<p align="center"><strong>• Context Compression (Auto-Compact)</strong></p>
+<p align="center"><strong>• MEMORY.md Persistent Memory</strong></p>
+<p align="center"><strong>• Session Resume & History</strong></p>
+
+</td>
+<td width="20%" align="center" style="vertical-align: top; padding: 15px;">
+
+<h3>🛡️ Governance</h3>
+
+<div align="center">
+  <img src="https://img.shields.io/badge/Permissions-F59E0B?style=for-the-badge&logo=shield&logoColor=white" alt="Governance" />
+</div>
+
+<img src="assets/scene-governance.png" width="140">
+
+<p align="center"><strong>• Multi-Level Permission Modes</strong></p>
+<p align="center"><strong>• Path-Level & Command Rules</strong></p>
+<p align="center"><strong>• PreToolUse / PostToolUse Hooks</strong></p>
+<p align="center"><strong>• Interactive Approval Dialogs</strong></p>
+
+</td>
+<td width="20%" align="center" style="vertical-align: top; padding: 15px;">
+
+<h3>🤝 Swarm Coordination</h3>
+
+<div align="center">
+  <img src="https://img.shields.io/badge/Multi--Agent-EC4899?style=for-the-badge&logo=network&logoColor=white" alt="Swarm" />
+</div>
+
+<img src="assets/scene-swarm.png" width="140">
+
+<p align="center"><strong>• Subagent Spawning & Delegation</strong></p>
+<p align="center"><strong>• Team Registry & Task Management</strong></p>
+<p align="center"><strong>• Background Task Lifecycle</strong></p>
+<p align="center"><strong>• <a href="https://github.com/HKUDS/ClawTeam">ClawTeam</a> Integration (Roadmap)</strong></p>
+
+</td>
+</tr>
+</table>
+
+---
+
 ## 📰 What's New
 
 - **2026-04-01** 🎨 **v0.1.0** — Initial **OpenHarness** open-source release featuring complete Harness architecture: 
