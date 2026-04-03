@@ -1,6 +1,6 @@
 <h1 align="center"><img src="assets/logo.png" alt="OpenHarness" width="64" style="vertical-align: middle;">&nbsp; <code>oh</code> — OpenHarness: Open Agent Harness</h1>
 
-**OpenHarness** delivers agent infrastructure with streaming execution, persistent memory, and multi-agent coordination out of the box.
+**OpenHarness** delivers core agent infrastructure: tool-use, memory, and multi-agent coordination.
 
 <p align="center">
   <a href="#-quick-start"><img src="https://img.shields.io/badge/Quick_Start-5_min-blue?style=for-the-badge" alt="Quick Start"></a>
