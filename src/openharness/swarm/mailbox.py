@@ -25,6 +25,8 @@ MessageType = Literal[
     "user_message",
     "permission_request",
     "permission_response",
+    "sandbox_permission_request",
+    "sandbox_permission_response",
     "shutdown",
     "idle_notification",
 ]
@@ -182,7 +184,7 @@ class TeammateMailbox:
 
 
 # ---------------------------------------------------------------------------
-# Factory helpers
+# Factory helpers (basic)
 # ---------------------------------------------------------------------------
 
 
@@ -219,3 +221,256 @@ def create_idle_notification(
     return _make_message(
         "idle_notification", sender, recipient, {"summary": summary}
     )
+
+
+# ---------------------------------------------------------------------------
+# Permission message factory functions (matching TS teammateMailbox.ts)
+# ---------------------------------------------------------------------------
+
+
+def create_permission_request_message(
+    sender: str,
+    recipient: str,
+    request_data: dict[str, Any],
+) -> MailboxMessage:
+    """Create a permission_request message from worker to leader.
+
+    Args:
+        sender: The sending worker's agent name.
+        recipient: The recipient leader's agent name.
+        request_data: Dict with keys: request_id, agent_id, tool_name,
+            tool_use_id, description, input, permission_suggestions.
+
+    Returns:
+        A :class:`MailboxMessage` of type ``permission_request``.
+    """
+    payload: dict[str, Any] = {
+        "type": "permission_request",
+        "request_id": request_data.get("request_id", ""),
+        "agent_id": request_data.get("agent_id", sender),
+        "tool_name": request_data.get("tool_name", ""),
+        "tool_use_id": request_data.get("tool_use_id", ""),
+        "description": request_data.get("description", ""),
+        "input": request_data.get("input", {}),
+        "permission_suggestions": request_data.get("permission_suggestions", []),
+    }
+    return _make_message("permission_request", sender, recipient, payload)
+
+
+def create_permission_response_message(
+    sender: str,
+    recipient: str,
+    response_data: dict[str, Any],
+) -> MailboxMessage:
+    """Create a permission_response message from leader to worker.
+
+    Args:
+        sender: The sending leader's agent name.
+        recipient: The target worker's agent name.
+        response_data: Dict with keys: request_id, subtype ('success'|'error'),
+            error (optional), updated_input (optional), permission_updates (optional).
+
+    Returns:
+        A :class:`MailboxMessage` of type ``permission_response``.
+    """
+    subtype = response_data.get("subtype", "success")
+    if subtype == "error":
+        payload: dict[str, Any] = {
+            "type": "permission_response",
+            "request_id": response_data.get("request_id", ""),
+            "subtype": "error",
+            "error": response_data.get("error", "Permission denied"),
+        }
+    else:
+        payload = {
+            "type": "permission_response",
+            "request_id": response_data.get("request_id", ""),
+            "subtype": "success",
+            "response": {
+                "updated_input": response_data.get("updated_input"),
+                "permission_updates": response_data.get("permission_updates"),
+            },
+        }
+    return _make_message("permission_response", sender, recipient, payload)
+
+
+def create_sandbox_permission_request_message(
+    sender: str,
+    recipient: str,
+    request_data: dict[str, Any],
+) -> MailboxMessage:
+    """Create a sandbox_permission_request message from worker to leader.
+
+    Args:
+        sender: The sending worker's agent name.
+        recipient: The recipient leader's agent name.
+        request_data: Dict with keys: requestId, workerId, workerName,
+            workerColor (optional), host.
+
+    Returns:
+        A :class:`MailboxMessage` of type ``sandbox_permission_request``.
+    """
+    payload: dict[str, Any] = {
+        "type": "sandbox_permission_request",
+        "requestId": request_data.get("requestId", ""),
+        "workerId": request_data.get("workerId", sender),
+        "workerName": request_data.get("workerName", sender),
+        "workerColor": request_data.get("workerColor"),
+        "hostPattern": {"host": request_data.get("host", "")},
+        "createdAt": int(time.time() * 1000),
+    }
+    return _make_message("sandbox_permission_request", sender, recipient, payload)
+
+
+def create_sandbox_permission_response_message(
+    sender: str,
+    recipient: str,
+    response_data: dict[str, Any],
+) -> MailboxMessage:
+    """Create a sandbox_permission_response message from leader to worker.
+
+    Args:
+        sender: The sending leader's agent name.
+        recipient: The target worker's agent name.
+        response_data: Dict with keys: requestId, host, allow.
+
+    Returns:
+        A :class:`MailboxMessage` of type ``sandbox_permission_response``.
+    """
+    from datetime import datetime, timezone
+
+    payload: dict[str, Any] = {
+        "type": "sandbox_permission_response",
+        "requestId": response_data.get("requestId", ""),
+        "host": response_data.get("host", ""),
+        "allow": bool(response_data.get("allow", False)),
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+    }
+    return _make_message("sandbox_permission_response", sender, recipient, payload)
+
+
+# ---------------------------------------------------------------------------
+# Type-guard helpers (matching TS isPermissionRequest etc.)
+# ---------------------------------------------------------------------------
+
+
+def is_permission_request(msg: MailboxMessage) -> dict[str, Any] | None:
+    """Return the permission request payload if *msg* is a permission_request, else None."""
+    if msg.type == "permission_request":
+        return msg.payload
+    # Also check text field for compatibility with text-envelope messages
+    text = msg.payload.get("text", "")
+    if text:
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict) and parsed.get("type") == "permission_request":
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return None
+
+
+def is_permission_response(msg: MailboxMessage) -> dict[str, Any] | None:
+    """Return the permission response payload if *msg* is a permission_response, else None."""
+    if msg.type == "permission_response":
+        return msg.payload
+    text = msg.payload.get("text", "")
+    if text:
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict) and parsed.get("type") == "permission_response":
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return None
+
+
+def is_sandbox_permission_request(msg: MailboxMessage) -> dict[str, Any] | None:
+    """Return payload if *msg* is a sandbox_permission_request, else None."""
+    if msg.type == "sandbox_permission_request":
+        return msg.payload
+    text = msg.payload.get("text", "")
+    if text:
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict) and parsed.get("type") == "sandbox_permission_request":
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return None
+
+
+def is_sandbox_permission_response(msg: MailboxMessage) -> dict[str, Any] | None:
+    """Return payload if *msg* is a sandbox_permission_response, else None."""
+    if msg.type == "sandbox_permission_response":
+        return msg.payload
+    text = msg.payload.get("text", "")
+    if text:
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict) and parsed.get("type") == "sandbox_permission_response":
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Global mailbox convenience functions (matching TS writeToMailbox etc.)
+# ---------------------------------------------------------------------------
+
+
+async def write_to_mailbox(
+    recipient_name: str,
+    message: dict[str, Any],
+    team_name: str | None = None,
+) -> None:
+    """Write a TeammateMessage-format dict to a recipient's mailbox.
+
+    This mirrors the TS ``writeToMailbox(recipientName, message, teamName)``
+    function.  The *message* dict should have at minimum a ``from`` key and
+    a ``text`` key (the serialised message content), and optionally
+    ``timestamp``, ``color``, and ``summary``.
+
+    Args:
+        recipient_name: The recipient agent's name/id.
+        message: Dict with ``from``, ``text``, and optional fields.
+        team_name: Optional team name; defaults to ``CLAUDE_CODE_TEAM_NAME``
+            env var, then ``"default"``.
+    """
+    team = team_name or os.environ.get("CLAUDE_CODE_TEAM_NAME", "default")
+    text = message.get("text", "")
+
+    # Detect message type from serialised text content so routing works
+    msg_type: MessageType = "user_message"
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict) and "type" in parsed:
+            t = parsed["type"]
+            if t in (
+                "permission_request",
+                "permission_response",
+                "sandbox_permission_request",
+                "sandbox_permission_response",
+                "shutdown",
+                "idle_notification",
+            ):
+                msg_type = t  # type: ignore[assignment]
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    msg = MailboxMessage(
+        id=str(uuid.uuid4()),
+        type=msg_type,
+        sender=message.get("from", "unknown"),
+        recipient=recipient_name,
+        payload={
+            "text": text,
+            "color": message.get("color"),
+            "summary": message.get("summary"),
+            "timestamp": message.get("timestamp"),
+        },
+        timestamp=time.time(),
+    )
+    mailbox = TeammateMailbox(team, recipient_name)
+    await mailbox.write(msg)
