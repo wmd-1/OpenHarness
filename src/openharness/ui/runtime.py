@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from openharness.api.client import AnthropicApiClient, SupportsStreamingMessages
+from openharness.api.copilot_client import CopilotClient
 from openharness.api.openai_client import OpenAICompatibleClient
 from openharness.api.provider import auth_status, detect_provider
 from openharness.bridge import get_bridge_manager
@@ -113,6 +114,8 @@ async def build_runtime(
     plugins = load_plugins(settings, cwd)
     if api_client:
         resolved_api_client = api_client
+    elif settings.api_format == "copilot":
+        resolved_api_client = CopilotClient(model=settings.model)
     elif settings.api_format == "openai":
         resolved_api_client = OpenAICompatibleClient(
             api_key=settings.resolve_api_key(),

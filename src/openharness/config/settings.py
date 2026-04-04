@@ -54,7 +54,7 @@ class Settings(BaseModel):
     model: str = "claude-sonnet-4-20250514"
     max_tokens: int = 16384
     base_url: str | None = None
-    api_format: str = "anthropic"  # "anthropic" or "openai"
+    api_format: str = "anthropic"  # "anthropic", "openai", or "copilot"
 
     # Behavior
     system_prompt: str | None = None
@@ -77,8 +77,15 @@ class Settings(BaseModel):
     def resolve_api_key(self) -> str:
         """Resolve API key with precedence: instance value > env var > empty.
 
+        For ``copilot`` api_format the key is managed separately via
+        ``oh auth copilot-login`` and this method is not called.
+
         Returns the API key string. Raises ValueError if no key is found.
         """
+        # Copilot format manages its own auth; skip normal key resolution.
+        if self.api_format == "copilot":
+            return "copilot-managed"
+
         if self.api_key:
             return self.api_key
 

@@ -19,6 +19,14 @@ class ProviderInfo:
 
 def detect_provider(settings: Settings) -> ProviderInfo:
     """Infer the active provider and rough capability set."""
+    # Copilot is determined by api_format, not by base_url heuristics.
+    if settings.api_format == "copilot":
+        return ProviderInfo(
+            name="github-copilot",
+            auth_kind="oauth_device",
+            voice_supported=False,
+            voice_reason="voice mode is not supported for GitHub Copilot",
+        )
     base_url = (settings.base_url or "").lower()
     model = settings.model.lower()
     if "moonshot" in base_url or model.startswith("kimi"):
@@ -73,6 +81,15 @@ def detect_provider(settings: Settings) -> ProviderInfo:
 
 def auth_status(settings: Settings) -> str:
     """Return a compact auth status string."""
+    if settings.api_format == "copilot":
+        from openharness.api.copilot_auth import load_copilot_auth
+
+        auth_info = load_copilot_auth()
+        if not auth_info:
+            return "missing (run 'oh auth copilot-login')"
+        if auth_info.enterprise_url:
+            return f"configured (enterprise: {auth_info.enterprise_url})"
+        return "configured"
     if settings.api_key:
         return "configured"
     return "missing"
