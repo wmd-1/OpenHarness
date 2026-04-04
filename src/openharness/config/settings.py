@@ -54,7 +54,7 @@ class Settings(BaseModel):
     model: str = "claude-sonnet-4-20250514"
     max_tokens: int = 16384
     base_url: str | None = None
-    max_turns: int = 8
+    max_turns: int = 32
 
     # Behavior
     system_prompt: str | None = None

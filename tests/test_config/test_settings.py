@@ -16,7 +16,7 @@ class TestSettings:
         assert s.api_key == ""
         assert s.model == "claude-sonnet-4-20250514"
         assert s.max_tokens == 16384
-        assert s.max_turns == 8
+        assert s.max_turns == 32
         assert s.fast_mode is False
         assert s.permission.mode == "default"
 
