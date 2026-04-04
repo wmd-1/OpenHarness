@@ -115,7 +115,9 @@ async def build_runtime(
     if api_client:
         resolved_api_client = api_client
     elif settings.api_format == "copilot":
-        resolved_api_client = CopilotClient(model=settings.model)
+        from openharness.api.copilot_client import COPILOT_DEFAULT_MODEL
+        copilot_model = settings.model if settings.model != "claude-sonnet-4-20250514" else COPILOT_DEFAULT_MODEL
+        resolved_api_client = CopilotClient(model=copilot_model)
     elif settings.api_format == "openai":
         resolved_api_client = OpenAICompatibleClient(
             api_key=settings.resolve_api_key(),

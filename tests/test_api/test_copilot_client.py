@@ -140,4 +140,4 @@ class TestStreamMessage:
         assert events[0].text == "Hello from Copilot"
         assert isinstance(events[1], ApiMessageCompleteEvent)
         assert events[1].stop_reason == "end_turn"
-        assert fake_inner.last_request is request
+        assert fake_inner.last_request == request

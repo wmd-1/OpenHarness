@@ -36,6 +36,10 @@ log = logging.getLogger(__name__)
 
 _VERSION = "0.1.0"  # OpenHarness version for User-Agent
 
+# Default model for Copilot requests when the configured model is not
+# available in the Copilot model catalog.
+COPILOT_DEFAULT_MODEL = "gpt-4o"
+
 
 # ---------------------------------------------------------------------------
 # Client
@@ -111,6 +115,17 @@ class CopilotClient:
 
         Satisfies the ``SupportsStreamingMessages`` protocol expected by
         the OpenHarness query engine.
+
+        If a *model* was provided at construction time it overrides the
+        model in *request*; otherwise the request model is passed through.
         """
-        async for event in self._inner.stream_message(request):
+        effective_model = self._model or request.model
+        patched = ApiMessageRequest(
+            model=effective_model,
+            messages=request.messages,
+            system_prompt=request.system_prompt,
+            max_tokens=request.max_tokens,
+            tools=request.tools,
+        )
+        async for event in self._inner.stream_message(patched):
             yield event
