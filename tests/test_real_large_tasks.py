@@ -8,6 +8,8 @@ Run: python tests/test_real_large_tasks.py
 
 from __future__ import annotations
 
+import pytest
+
 import asyncio
 import os
 import sys
@@ -84,6 +86,7 @@ def collect(events):
 #           web_fetch (fetch OWASP reference), multi-turn agent loop,
 #           file read/grep on unfamiliar codebase
 # ====================================================================
+@pytest.mark.skipif(not Path("/home/tangjiabin/AutoAgent").exists(), reason="Needs real API + AutoAgent")
 async def task_security_audit_with_hooks():
     """Full security audit: agent reads code, fetches OWASP checklist, reports issues.
     Hooks log every tool use. Permission denies dangerous commands."""
@@ -159,6 +162,7 @@ async def task_security_audit_with_hooks():
 #           team lifecycle, in-process teammates (2 concurrent),
 #           mailbox communication, agent definitions
 # ====================================================================
+@pytest.mark.skipif(not Path("/home/tangjiabin/AutoAgent").exists(), reason="Needs real API + AutoAgent")
 async def task_coordinator_code_review():
     """Coordinator delegates code review to 2 worker agents, synthesizes results."""
 
@@ -286,6 +290,7 @@ async def task_coordinator_code_review():
 #           session storage (save/export), multi-turn conversation,
 #           config settings, agent definitions (Plan agent prompt)
 # ====================================================================
+@pytest.mark.skipif(not Path("/home/tangjiabin/AutoAgent").exists(), reason="Needs real API + AutoAgent")
 async def task_migration_plan_with_memory():
     """Agent analyzes AutoAgent, saves findings to memory, creates migration plan,
     saves session for later resume."""
@@ -406,6 +411,7 @@ async def task_migration_plan_with_memory():
 #           file write/edit, bash (run tests), multi-turn,
 #           agent works in worktree copy, changes don't affect original
 # ====================================================================
+@pytest.mark.skipif(not Path("/home/tangjiabin/AutoAgent").exists(), reason="Needs real API + AutoAgent")
 async def task_bugfix_in_worktree():
     """Agent creates a worktree, makes a fix in isolation, verifies it, cleans up."""
 
@@ -504,6 +510,7 @@ if __name__ == "__main__":
 #           in-process teammates, permission sync (request/resolve),
 #           team lifecycle, mailbox, agent definitions, auto-compact
 # ====================================================================
+@pytest.mark.skipif(not Path("/home/tangjiabin/AutoAgent").exists(), reason="Needs real API + AutoAgent")
 async def task_full_pipeline():
     """Simulate the full research→plan→implement→verify pipeline with coordinator."""
 
@@ -651,6 +658,7 @@ async def task_full_pipeline():
 # Features: session save/load, multi-turn (3 turns), file edit,
 #           config settings, cost tracking
 # ====================================================================
+@pytest.mark.skipif(not Path("/home/tangjiabin/AutoAgent").exists(), reason="Needs real API + AutoAgent")
 async def task_refactor_with_session():
     """Refactor code across 3 turns, save session, verify it can be loaded."""
 

@@ -9,6 +9,8 @@ or the hardcoded key below.
 
 from __future__ import annotations
 
+import pytest
+
 import asyncio
 import json
 import os
@@ -26,6 +28,7 @@ API_KEY = os.environ.get(
 BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.moonshot.cn/anthropic")
 MODEL = os.environ.get("ANTHROPIC_MODEL", "kimi-k2.5")
 WORKSPACE = Path("/home/tangjiabin/AutoAgent")
+_SKIP_REAL_API = not WORKSPACE.exists() or not API_KEY
 
 RESULTS: dict[str, bool] = {}
 
@@ -173,6 +176,7 @@ async def test_hooks_post_tool_use():
 # ====================================================================
 # 3. Hooks integrated into agent loop — hook blocks a dangerous command
 # ====================================================================
+@pytest.mark.skipif(_SKIP_REAL_API, reason="Needs real API + AutoAgent")
 async def test_hooks_in_agent_loop():
     """Hook that blocks 'rm' commands integrated into real agent loop."""
     from openharness.api.client import AnthropicApiClient
@@ -527,6 +531,7 @@ async def test_commands_registry():
 # ====================================================================
 # 10. Web fetch: real URL fetch in agent loop
 # ====================================================================
+@pytest.mark.skipif(_SKIP_REAL_API, reason="Needs real API + AutoAgent")
 async def test_web_fetch_real():
     """Agent fetches a real URL and summarizes it."""
     from openharness.tools.web_fetch_tool import WebFetchTool
@@ -548,6 +553,7 @@ async def test_web_fetch_real():
 # ====================================================================
 # 11. Worktree: real git worktree create/list/remove
 # ====================================================================
+@pytest.mark.skipif(not os.path.exists("/usr/bin/git"), reason="Needs git")
 async def test_worktree_real_git():
     """Create a real git worktree, list it, remove it."""
     from openharness.swarm.worktree import WorktreeManager
@@ -631,6 +637,7 @@ async def test_config_paths():
 # ====================================================================
 # 14. Combined: hooks + skills + agent loop on AutoAgent
 # ====================================================================
+@pytest.mark.skipif(_SKIP_REAL_API, reason="Needs real API + AutoAgent")
 async def test_combined_hooks_skills_agent():
     """Combined test: load skills, register hooks, run agent on AutoAgent."""
     from openharness.skills.registry import SkillRegistry
@@ -702,6 +709,7 @@ async def test_combined_hooks_skills_agent():
 # ====================================================================
 # 15. Multi-agent + worktree + team: full swarm on AutoAgent
 # ====================================================================
+@pytest.mark.skipif(_SKIP_REAL_API, reason="Needs real API + AutoAgent")
 async def test_full_swarm_autoagent():
     """Spawn 2 in-process teammates working on AutoAgent with team management."""
     from openharness.swarm.in_process import start_in_process_teammate, TeammateAbortController
