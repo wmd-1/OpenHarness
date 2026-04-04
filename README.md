@@ -208,17 +208,46 @@ oh -p "Fix the bug" --output-format stream-json
 
 ## 🔌 Provider Compatibility
 
-OpenHarness currently detects and adapts to a small set of provider profiles in code. The table below is intentionally conservative and reflects the profiles implemented in `src/openharness/api/provider.py`.
+OpenHarness supports two API formats: **Anthropic** (default) and **OpenAI-compatible** (`--api-format openai`). The OpenAI format covers a wide range of providers.
 
-| Provider profile | Detection signal | Auth kind | Voice mode | Notes |
-|------------------|------------------|-----------|------------|-------|
-| **Anthropic** | Default when no custom `ANTHROPIC_BASE_URL` is set | API key | Not wired in current build | Default Claude-oriented setup |
-| **Moonshot / Kimi** | `ANTHROPIC_BASE_URL` contains `moonshot` or model starts with `kimi` | API key | Not wired in current build | Works through an Anthropic-compatible endpoint |
-| **Vertex-compatible** | Base URL contains `vertex` or `aiplatform` | GCP | Not wired in current build | Good fit for Anthropic-style gateways on Vertex |
-| **Bedrock-compatible** | Base URL contains `bedrock` | AWS | Not wired in current build | Intended for Bedrock-style deployments |
-| **Generic Anthropic-compatible** | Any other explicit `ANTHROPIC_BASE_URL` | API key | Not wired in current build | Useful for proxies and internal gateways |
+### Anthropic Format (default)
 
-If you are evaluating cross-provider workflows or want a concrete demo path, start with Anthropic or the Kimi example above, then compare behavior against your own compatible endpoint.
+| Provider profile | Detection signal | Notes |
+|------------------|------------------|-------|
+| **Anthropic** | Default when no custom `ANTHROPIC_BASE_URL` is set | Default Claude-oriented setup |
+| **Moonshot / Kimi** | `ANTHROPIC_BASE_URL` contains `moonshot` or model starts with `kimi` | Anthropic-compatible endpoint |
+| **Vertex-compatible** | Base URL contains `vertex` or `aiplatform` | Anthropic-style gateways on Vertex |
+| **Bedrock-compatible** | Base URL contains `bedrock` | Bedrock-style deployments |
+| **Generic Anthropic-compatible** | Any other explicit `ANTHROPIC_BASE_URL` | Proxies and internal gateways |
+
+### OpenAI Format (`--api-format openai`)
+
+Any provider implementing the OpenAI `/v1/chat/completions` API works out of the box:
+
+| Provider | Base URL | Example models |
+|----------|----------|----------------|
+| **Alibaba DashScope** | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen3.5-flash`, `qwen3-max`, `deepseek-r1` |
+| **DeepSeek** | `https://api.deepseek.com` | `deepseek-chat`, `deepseek-reasoner` |
+| **OpenAI** | `https://api.openai.com/v1` | `gpt-4o`, `gpt-4o-mini` |
+| **GitHub Models** | `https://models.inference.ai.azure.com` | `gpt-4o`, `Meta-Llama-3.1-405B-Instruct` |
+| **SiliconFlow** | `https://api.siliconflow.cn/v1` | `deepseek-ai/DeepSeek-V3` |
+| **Groq** | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` |
+| **Ollama (local)** | `http://localhost:11434/v1` | Any local model |
+
+```bash
+# Example: use DashScope
+uv run oh --api-format openai \
+  --base-url "https://dashscope.aliyuncs.com/compatible-mode/v1" \
+  --api-key "sk-xxx" \
+  --model "qwen3.5-flash"
+
+# Or via environment variables
+export OPENHARNESS_API_FORMAT=openai
+export OPENAI_API_KEY=sk-xxx
+export OPENHARNESS_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+export OPENHARNESS_MODEL=qwen3.5-flash
+uv run oh
+```
 
 ---
 
