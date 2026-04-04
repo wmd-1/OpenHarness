@@ -23,6 +23,7 @@ async def run_repl(
     api_format: str | None = None,
     api_client: SupportsStreamingMessages | None = None,
     backend_only: bool = False,
+    restore_messages: list[dict] | None = None,
 ) -> None:
     """Run the default OpenHarness interactive application (React TUI)."""
     if backend_only:
@@ -34,6 +35,7 @@ async def run_repl(
             api_key=api_key,
             api_format=api_format,
             api_client=api_client,
+            restore_messages=restore_messages,
         )
         return
 
