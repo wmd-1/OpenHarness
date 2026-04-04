@@ -33,11 +33,15 @@ def collect(events):
     )
     r = {"text": "", "tools": [], "tool_errors": [], "turns": 0}
     for ev in events:
-        if isinstance(ev, AssistantTextDelta): r["text"] += ev.text
-        elif isinstance(ev, ToolExecutionStarted): r["tools"].append(ev.tool_name)
+        if isinstance(ev, AssistantTextDelta):
+            r["text"] += ev.text
+        elif isinstance(ev, ToolExecutionStarted):
+            r["tools"].append(ev.tool_name)
         elif isinstance(ev, ToolExecutionCompleted):
-            if ev.is_error: r["tool_errors"].append({"tool": ev.tool_name, "err": ev.output[:200]})
-        elif isinstance(ev, AssistantTurnComplete): r["turns"] += 1
+            if ev.is_error:
+                r["tool_errors"].append({"tool": ev.tool_name, "err": ev.output[:200]})
+        elif isinstance(ev, AssistantTurnComplete):
+            r["turns"] += 1
     return r
 
 
@@ -56,7 +60,6 @@ async def task_hook_blocks_model_adapts():
     from openharness.api.client import AnthropicApiClient
     from openharness.config.settings import PermissionSettings
     from openharness.engine.query_engine import QueryEngine
-    from openharness.engine.stream_events import AssistantTextDelta, AssistantTurnComplete, ToolExecutionStarted, ToolExecutionCompleted
     from openharness.permissions.checker import PermissionChecker
     from openharness.permissions.modes import PermissionMode
     from openharness.tools.base import ToolRegistry
@@ -393,14 +396,14 @@ def process_v2(data):
         hook_reg = HookRegistry()
         hook_reg.register(HookEvent.PRE_TOOL_USE, CommandHookDefinition(
             type="command",
-            command=f'echo "$TOOL_INPUT" | grep -q "config.py" && exit 1 || exit 0',
+            command='echo "$TOOL_INPUT" | grep -q "config.py" && exit 1 || exit 0',
             matcher="write_file",
             block_on_failure=True,
             timeout_seconds=5,
         ))
         hook_reg.register(HookEvent.PRE_TOOL_USE, CommandHookDefinition(
             type="command",
-            command=f'echo "$TOOL_INPUT" | grep -q "config.py" && exit 1 || exit 0',
+            command='echo "$TOOL_INPUT" | grep -q "config.py" && exit 1 || exit 0',
             matcher="edit_file",
             block_on_failure=True,
             timeout_seconds=5,
@@ -452,10 +455,9 @@ def process_v2(data):
             content = refactored.read_text()
             print(f"  Refactored file: {len(content)} chars")
             # Should have merged the two identical functions
-            has_single_func = content.count("def process") >= 1
+            print(f"  Functions found: {content.count('def process')}")
         else:
-            has_single_func = False
-            print(f"  Refactored file: NOT CREATED")
+            print("  Refactored file: NOT CREATED")
 
         # Config should be untouched
         config_safe = (work_dir / "config.py").read_text() == 'SECRET = "do-not-touch"\n'
@@ -599,7 +601,8 @@ async def main():
         except Exception as e:
             RESULTS[name] = (False, time.time() - t0)
             print(f"\n  EXCEPTION: {e}")
-            import traceback; traceback.print_exc()
+            import traceback
+            traceback.print_exc()
 
     print(f"\n{'='*70}")
     print("  FINAL RESULTS — Hooks/Skills/Plugins in Real Agent Loops")
