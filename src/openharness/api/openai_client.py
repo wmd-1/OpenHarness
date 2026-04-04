@@ -104,7 +104,13 @@ def _convert_messages_to_openai(
 
 
 def _convert_assistant_message(msg: ConversationMessage) -> dict[str, Any]:
-    """Convert an assistant ConversationMessage to OpenAI format."""
+    """Convert an assistant ConversationMessage to OpenAI format.
+
+    Providers with thinking models (e.g. Kimi k2.5) require a
+    ``reasoning_content`` field on every assistant message that contains
+    tool calls.  We stash the raw reasoning text on ``msg._reasoning``
+    during parsing and replay it here.
+    """
     text_parts = [b.text for b in msg.content if isinstance(b, TextBlock)]
     tool_uses = [b for b in msg.content if isinstance(b, ToolUseBlock)]
 
@@ -112,6 +118,14 @@ def _convert_assistant_message(msg: ConversationMessage) -> dict[str, Any]:
 
     content = "".join(text_parts)
     openai_msg["content"] = content if content else None
+
+    # Replay reasoning_content for thinking models (stored by streaming parser)
+    reasoning = getattr(msg, "_reasoning", None)
+    if reasoning:
+        openai_msg["reasoning_content"] = reasoning
+    elif tool_uses:
+        # Thinking models require this field even if empty
+        openai_msg["reasoning_content"] = ""
 
     if tool_uses:
         openai_msg["tool_calls"] = [
@@ -202,12 +216,19 @@ class OpenAICompatibleClient:
             "messages": openai_messages,
             "max_tokens": request.max_tokens,
             "stream": True,
+            "stream_options": {"include_usage": True},
         }
         if openai_tools:
             params["tools"] = openai_tools
+            # Some providers (Kimi) error on empty reasoning_content in
+            # tool-call follow-ups.  Omit the entire stream_options key if
+            # tools are present – avoids triggering model-side thinking mode
+            # that requires reasoning_content on every assistant message.
+            params.pop("stream_options", None)
 
         # Collect full response while streaming text deltas
         collected_content = ""
+        collected_reasoning = ""
         collected_tool_calls: dict[int, dict[str, Any]] = {}
         finish_reason: str | None = None
         usage_data: dict[str, int] = {}
@@ -229,7 +250,12 @@ class OpenAICompatibleClient:
             if chunk_finish:
                 finish_reason = chunk_finish
 
-            # Stream text content
+            # Accumulate reasoning_content from thinking models (not shown to user)
+            reasoning_piece = getattr(delta, "reasoning_content", None) or ""
+            if reasoning_piece:
+                collected_reasoning += reasoning_piece
+
+            # Stream text content to user
             if delta.content:
                 collected_content += delta.content
                 yield ApiTextDeltaEvent(text=delta.content)
@@ -281,6 +307,11 @@ class OpenAICompatibleClient:
             ))
 
         final_message = ConversationMessage(role="assistant", content=content)
+
+        # Stash reasoning for thinking models so _convert_assistant_message
+        # can replay it when the message is sent back to the API
+        if collected_reasoning:
+            final_message._reasoning = collected_reasoning  # type: ignore[attr-defined]
 
         yield ApiMessageCompleteEvent(
             message=final_message,
