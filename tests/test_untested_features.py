@@ -553,7 +553,7 @@ async def test_web_fetch_real():
 # ====================================================================
 # 11. Worktree: real git worktree create/list/remove
 # ====================================================================
-@pytest.mark.skipif(not os.path.exists("/usr/bin/git"), reason="Needs git")
+@pytest.mark.skipif(_SKIP_REAL_API, reason="Needs local environment")
 async def test_worktree_real_git():
     """Create a real git worktree, list it, remove it."""
     from openharness.swarm.worktree import WorktreeManager
