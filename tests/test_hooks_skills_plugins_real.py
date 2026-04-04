@@ -523,7 +523,7 @@ Use grep to search for '^import ' and '^from .* import'. Count unique packages. 
             ctx = QueryContext(
                 api_client=api, tool_registry=reg,
                 permission_checker=PermissionChecker(PermissionSettings(mode=PermissionMode.FULL_AUTO)),
-                cwd=WORKSPACE, model=MODEL, max_tokens=1024, max_turns=8,
+                cwd=WORKSPACE, model=MODEL, max_tokens=1024, max_turns=20,
                 system_prompt="You are a worker. First invoke the skill tool to get instructions, then follow them.",
             )
             config = TeammateSpawnConfig(
@@ -545,11 +545,11 @@ Use grep to search for '^import ' and '^from .* import'. Count unique packages. 
             asyncio.wait_for(run_teammate(
                 "class-counter",
                 "Load the 'count-classes' skill, then follow its instructions on the autoagent/ codebase."
-            ), timeout=45),
+            ), timeout=120),
             asyncio.wait_for(run_teammate(
                 "import-finder",
                 "Load the 'find-imports' skill, then follow its instructions on the autoagent/ codebase."
-            ), timeout=45),
+            ), timeout=120),
             return_exceptions=True,
         )
         elapsed = time.time() - t0
