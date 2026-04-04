@@ -8,6 +8,8 @@ Atomic writes use a .tmp file followed by os.rename to prevent partial reads.
 
 from __future__ import annotations
 
+import asyncio
+import fcntl
 import json
 import os
 import time
@@ -123,15 +125,32 @@ class TeammateMailbox:
         The file is first written to ``<name>.tmp`` then renamed into the
         inbox directory so that concurrent readers never observe a partial
         write.
+
+        This method uses a thread pool for the blocking I/O operations and
+        acquires an exclusive lock to prevent concurrent write conflicts.
         """
         inbox = self.get_mailbox_dir()
         filename = f"{msg.timestamp:.6f}_{msg.id}.json"
         final_path = inbox / filename
         tmp_path = inbox / f"{filename}.tmp"
+        lock_path = inbox / ".write_lock"
 
         payload = json.dumps(msg.to_dict(), indent=2)
-        tmp_path.write_text(payload, encoding="utf-8")
-        os.rename(tmp_path, final_path)
+
+        def _write_atomic() -> None:
+            # Acquire exclusive lock to prevent concurrent writes
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(lock_path, "w") as lock_file:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                try:
+                    tmp_path.write_text(payload, encoding="utf-8")
+                    os.rename(tmp_path, final_path)
+                finally:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+        # Offload blocking I/O to thread pool
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _write_atomic)
 
     async def read_all(self, unread_only: bool = True) -> list[MailboxMessage]:
         """Return messages from the inbox, sorted by timestamp (oldest first).
@@ -142,45 +161,78 @@ class TeammateMailbox:
                 already-read ones.
         """
         inbox = self.get_mailbox_dir()
-        messages: list[MailboxMessage] = []
 
-        for path in sorted(inbox.glob("*.json")):
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-                msg = MailboxMessage.from_dict(data)
-                if not unread_only or not msg.read:
-                    messages.append(msg)
-            except (json.JSONDecodeError, KeyError):
-                # Skip corrupted message files rather than crashing.
-                continue
+        def _read_all() -> list[MailboxMessage]:
+            messages: list[MailboxMessage] = []
+            for path in sorted(inbox.glob("*.json")):
+                # Skip lock files and temp files
+                if path.name.startswith(".") or path.name.endswith(".tmp"):
+                    continue
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                    msg = MailboxMessage.from_dict(data)
+                    if not unread_only or not msg.read:
+                        messages.append(msg)
+                except (json.JSONDecodeError, KeyError):
+                    # Skip corrupted message files rather than crashing.
+                    continue
+            return messages
 
-        return messages
+        # Offload blocking I/O to thread pool
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _read_all)
 
     async def mark_read(self, message_id: str) -> None:
         """Mark the message with *message_id* as read (in-place update)."""
         inbox = self.get_mailbox_dir()
+        lock_path = inbox / ".write_lock"
 
-        for path in inbox.glob("*.json"):
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                continue
+        def _mark_read() -> bool:
+            # Acquire exclusive lock to prevent concurrent modifications
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(lock_path, "w") as lock_file:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                try:
+                    for path in inbox.glob("*.json"):
+                        # Skip lock files and temp files
+                        if path.name.startswith(".") or path.name.endswith(".tmp"):
+                            continue
+                        try:
+                            data = json.loads(path.read_text(encoding="utf-8"))
+                        except (json.JSONDecodeError, OSError):
+                            continue
 
-            if data.get("id") == message_id:
-                data["read"] = True
-                tmp_path = path.with_suffix(".json.tmp")
-                tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-                os.rename(tmp_path, path)
-                return
+                        if data.get("id") == message_id:
+                            data["read"] = True
+                            tmp_path = path.with_suffix(".json.tmp")
+                            tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                            os.rename(tmp_path, path)
+                            return True
+                    return False
+                finally:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+        # Offload blocking I/O to thread pool
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _mark_read)
 
     async def clear(self) -> None:
         """Remove all message files from the inbox."""
         inbox = self.get_mailbox_dir()
-        for path in inbox.glob("*.json"):
-            try:
-                path.unlink()
-            except OSError:
-                pass
+
+        def _clear() -> None:
+            for path in inbox.glob("*.json"):
+                # Skip lock files
+                if path.name.startswith("."):
+                    continue
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+
+        # Offload blocking I/O to thread pool
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _clear)
 
 
 # ---------------------------------------------------------------------------

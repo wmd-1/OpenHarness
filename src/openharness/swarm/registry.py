@@ -6,7 +6,7 @@ import logging
 import os
 import platform
 import shutil
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from openharness.swarm.spawn_utils import is_tmux_available
 from openharness.swarm.types import BackendDetectionResult, BackendType, TeammateExecutor
@@ -336,6 +336,30 @@ class BackendRegistry:
     def available_backends(self) -> list[BackendType]:
         """Return sorted list of registered backend types."""
         return sorted(self._backends.keys())  # type: ignore[return-value]
+
+    def health_check(self) -> dict[str, Any]:
+        """Check the health of all registered backends.
+
+        Returns:
+            Dict with backend_name -> {available: bool, type: str} mapping,
+            plus a total_count of available backends.
+        """
+        results: dict[str, dict[str, Any]] = {}
+        available_count = 0
+
+        for backend_type, executor in self._backends.items():
+            is_available = executor.is_available()
+            results[backend_type] = {
+                "available": is_available,
+                "type": str(executor.type),
+            }
+            if is_available:
+                available_count += 1
+
+        return {
+            "backends": results,
+            "total_count": available_count,
+        }
 
     def reset(self) -> None:
         """Clear detection cache and re-register defaults.

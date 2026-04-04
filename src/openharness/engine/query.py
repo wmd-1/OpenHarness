@@ -45,7 +45,7 @@ class QueryContext:
     max_tokens: int
     permission_prompt: PermissionPrompt | None = None
     ask_user_prompt: AskUserPrompt | None = None
-    max_turns: int = 8
+    max_turns: int = 200
     hook_executor: HookExecutor | None = None
     tool_metadata: dict[str, object] | None = None
 
