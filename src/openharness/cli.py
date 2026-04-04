@@ -305,6 +305,12 @@ def main(
         help="Minimal mode: skip hooks, plugins, MCP, and auto-discovery",
         rich_help_panel="System & Context",
     ),
+    api_format: str | None = typer.Option(
+        None,
+        "--api-format",
+        help="API format: 'anthropic' (default) or 'openai' (for DashScope, GitHub Models, etc.)",
+        rich_help_panel="System & Context",
+    ),
     # --- Advanced ---
     debug: bool = typer.Option(
         False,
@@ -358,6 +364,7 @@ def main(
                 system_prompt=system_prompt,
                 append_system_prompt=append_system_prompt,
                 api_key=api_key,
+                api_format=api_format,
                 permission_mode=permission_mode,
                 max_turns=max_turns,
             )
@@ -373,5 +380,6 @@ def main(
             base_url=base_url,
             system_prompt=system_prompt,
             api_key=api_key,
+            api_format=api_format,
         )
     )
