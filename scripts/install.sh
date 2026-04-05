@@ -211,7 +211,7 @@ if [ "$FROM_SOURCE" = true ]; then
     $PIP_CMD install -e "$INSTALL_DIR" --quiet
 else
     info "Mode: pip install openharness"
-    $PIP_CMD install openharness --quiet --upgrade
+    $PIP_CMD install openharness-ai --quiet --upgrade
 fi
 
 success "OpenHarness package installed"
