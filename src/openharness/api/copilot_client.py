@@ -21,7 +21,6 @@ from openharness.api.client import (
     ApiStreamEvent,
 )
 from openharness.api.copilot_auth import (
-    CopilotAuthInfo,
     copilot_api_base,
     load_copilot_auth,
 )

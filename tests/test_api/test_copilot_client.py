@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import AsyncIterator
 
 import pytest
 
@@ -14,9 +14,6 @@ from openharness.api.client import (
     ApiTextDeltaEvent,
 )
 from openharness.api.copilot_auth import (
-    COPILOT_DEFAULT_API_BASE,
-    CopilotAuthInfo,
-    copilot_api_base,
     save_copilot_auth,
 )
 from openharness.api.copilot_client import CopilotClient
