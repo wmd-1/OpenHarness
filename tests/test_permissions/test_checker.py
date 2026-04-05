@@ -52,12 +52,13 @@ def _settings_with_rules(*rules) -> PermissionSettings:
 @pytest.mark.parametrize(
     "bad_rule",
     [
-        PathRuleConfig.model_construct(allow=False),           # pattern attribute missing
-        PathRuleConfig.model_construct(pattern="", allow=False),  # pattern empty string
-        PathRuleConfig.model_construct(pattern=42, allow=False),  # pattern non-string
-        PathRuleConfig.model_construct(pattern=None, allow=False),  # pattern None
+        PathRuleConfig.model_construct(allow=False),                  # pattern attribute missing
+        PathRuleConfig.model_construct(pattern="", allow=False),      # pattern empty string
+        PathRuleConfig.model_construct(pattern="   ", allow=False),   # pattern whitespace-only
+        PathRuleConfig.model_construct(pattern=42, allow=False),      # pattern non-string
+        PathRuleConfig.model_construct(pattern=None, allow=False),    # pattern None
     ],
-    ids=["missing", "empty", "non-string", "none"],
+    ids=["missing", "empty", "whitespace-only", "non-string", "none"],
 )
 def test_invalid_pattern_rule_is_skipped_and_warns(bad_rule, caplog):
     """Rules with missing, empty, or non-string patterns are skipped with a warning."""
@@ -99,3 +100,16 @@ def test_valid_allow_rule_is_added():
     assert len(checker._path_rules) == 1
     assert checker._path_rules[0].pattern == "/data/*"
     assert checker._path_rules[0].allow is True
+
+
+def test_pattern_with_surrounding_whitespace_is_stripped():
+    """A pattern with leading/trailing whitespace is accepted with whitespace stripped."""
+    rule = PathRuleConfig.model_construct(pattern="  /etc/*  ", allow=False)
+    settings = _settings_with_rules(rule)
+    checker = PermissionChecker(settings)
+
+    assert len(checker._path_rules) == 1
+    assert checker._path_rules[0].pattern == "/etc/*"
+
+    decision = checker.evaluate("read_file", is_read_only=True, file_path="/etc/passwd")
+    assert decision.allowed is False
