@@ -42,7 +42,7 @@ class PermissionChecker:
             if pattern:
                 self._path_rules.append(PathRule(pattern=pattern, allow=allow))
             else:
-                log.warning("Skipping path rule with missing 'pattern' field: %r", rule)
+                log.warning("Skipping path rule with missing or empty 'pattern' field: %r", rule)
 
     def evaluate(
         self,
