@@ -197,9 +197,10 @@ async def _execute_tool_call(
             is_error=True,
         )
 
-    # Extract file_path and command for path-level permission checks
-    _file_path = str(tool_input.get("file_path", "")) or None
-    _command = str(tool_input.get("command", "")) or None
+    # Normalize common tool inputs before permission checks so path rules apply
+    # consistently across built-in tools that use either `file_path` or `path`.
+    _file_path = _resolve_permission_file_path(context.cwd, tool_input, parsed_input)
+    _command = _extract_permission_command(tool_input, parsed_input)
     decision = context.permission_checker.evaluate(
         tool_name,
         is_read_only=tool.is_read_only(parsed_input),
@@ -250,3 +251,42 @@ async def _execute_tool_call(
             },
         )
     return tool_result
+
+
+def _resolve_permission_file_path(
+    cwd: Path,
+    raw_input: dict[str, object],
+    parsed_input: object,
+) -> str | None:
+    for key in ("file_path", "path"):
+        value = raw_input.get(key)
+        if isinstance(value, str) and value.strip():
+            path = Path(value).expanduser()
+            if not path.is_absolute():
+                path = cwd / path
+            return str(path.resolve())
+
+    for attr in ("file_path", "path"):
+        value = getattr(parsed_input, attr, None)
+        if isinstance(value, str) and value.strip():
+            path = Path(value).expanduser()
+            if not path.is_absolute():
+                path = cwd / path
+            return str(path.resolve())
+
+    return None
+
+
+def _extract_permission_command(
+    raw_input: dict[str, object],
+    parsed_input: object,
+) -> str | None:
+    value = raw_input.get("command")
+    if isinstance(value, str) and value.strip():
+        return value
+
+    value = getattr(parsed_input, "command", None)
+    if isinstance(value, str) and value.strip():
+        return value
+
+    return None
