@@ -55,7 +55,7 @@ class Settings(BaseModel):
     max_tokens: int = 16384
     base_url: str | None = None
     api_format: str = "anthropic"  # "anthropic", "openai", or "copilot"
-    max_turns: int = 32
+    max_turns: int = 200
 
     # Behavior
     system_prompt: str | None = None
