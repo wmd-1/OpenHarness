@@ -185,6 +185,21 @@ step "Installing OpenHarness"
 
 REPO_URL="https://github.com/HKUDS/OpenHarness.git"
 INSTALL_DIR="$HOME/.openharness-src"
+VENV_DIR="$HOME/.openharness-venv"
+
+# ---------------------------------------------------------------------------
+# Create a virtual environment to avoid PEP 668 externally-managed errors
+# ---------------------------------------------------------------------------
+if [ ! -d "$VENV_DIR" ]; then
+    info "Creating virtual environment at ${VENV_DIR}..."
+    "$PYTHON_CMD" -m venv "$VENV_DIR"
+fi
+
+# Activate the venv — all pip installs go here
+source "$VENV_DIR/bin/activate"
+PYTHON_CMD="python"
+PIP_CMD="pip"
+success "Virtual environment ready: ${VENV_DIR}"
 
 if [ "$FROM_SOURCE" = true ]; then
     info "Mode: --from-source (git clone + pip install -e .)"
@@ -210,7 +225,7 @@ if [ "$FROM_SOURCE" = true ]; then
     info "Installing in editable mode (pip install -e .)..."
     $PIP_CMD install -e "$INSTALL_DIR" --quiet
 else
-    info "Mode: pip install openharness"
+    info "Mode: pip install openharness-ai"
     $PIP_CMD install openharness-ai --quiet --upgrade
 fi
 
@@ -282,13 +297,44 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Step 9: Add venv activation to shell profile
+# ---------------------------------------------------------------------------
+step "Setting up shell integration"
+
+SHELL_RC=""
+if [ -f "$HOME/.zshrc" ]; then
+    SHELL_RC="$HOME/.zshrc"
+elif [ -f "$HOME/.bashrc" ]; then
+    SHELL_RC="$HOME/.bashrc"
+elif [ -f "$HOME/.bash_profile" ]; then
+    SHELL_RC="$HOME/.bash_profile"
+fi
+
+ACTIVATION_LINE="export PATH=\"$VENV_DIR/bin:\$PATH\""
+
+if [ -n "$SHELL_RC" ]; then
+    if ! grep -q "$VENV_DIR/bin" "$SHELL_RC" 2>/dev/null; then
+        echo "" >> "$SHELL_RC"
+        echo "# OpenHarness" >> "$SHELL_RC"
+        echo "$ACTIVATION_LINE" >> "$SHELL_RC"
+        success "Added $VENV_DIR/bin to PATH in $(basename $SHELL_RC)"
+    else
+        info "PATH already configured in $(basename $SHELL_RC)"
+    fi
+else
+    warn "Could not find shell config file. Add this to your shell profile:"
+    echo "    $ACTIVATION_LINE"
+fi
+
+# ---------------------------------------------------------------------------
 # Done
 # ---------------------------------------------------------------------------
 echo ""
 echo -e "${BOLD}${GREEN}OpenHarness is installed!${RESET}"
 echo ""
 echo "  Next steps:"
-echo "    1. Set your API key:   export ANTHROPIC_API_KEY=your_key"
-echo "    2. Launch:             oh"
-echo "    3. Docs:               https://github.com/HKUDS/OpenHarness"
+echo "    1. Restart shell (or run):  source ${SHELL_RC:-~/.bashrc}"
+echo "    2. Set your API key:        export ANTHROPIC_API_KEY=your_key"
+echo "    3. Launch:                  oh"
+echo "    4. Docs:                    https://github.com/HKUDS/OpenHarness"
 echo ""
