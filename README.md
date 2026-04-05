@@ -159,6 +159,40 @@ OpenHarness is an open-source Python implementation designed for **researchers, 
 
 ## 🚀 Quick Start
 
+### One-Click Install
+
+The fastest way to get started — a single command handles OS detection, dependency checks, and installation:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/HKUDS/OpenHarness/main/scripts/install.sh | bash
+```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--from-source` | Clone from GitHub and install in editable mode (`pip install -e .`) |
+| `--with-channels` | Also install IM channel dependencies (`slack-sdk`, `python-telegram-bot`, `discord.py`) |
+
+```bash
+# Install from source (for contributors / latest code)
+curl -fsSL https://raw.githubusercontent.com/HKUDS/OpenHarness/main/scripts/install.sh | bash -s -- --from-source
+
+# Install with IM channel support
+curl -fsSL https://raw.githubusercontent.com/HKUDS/OpenHarness/main/scripts/install.sh | bash -s -- --with-channels
+
+# Or run locally after cloning
+bash scripts/install.sh --from-source --with-channels
+```
+
+The script will:
+1. Detect your OS (Linux / macOS / WSL)
+2. Verify Python ≥ 3.10 and Node.js ≥ 18
+3. Install OpenHarness via `pip`
+4. Set up the React TUI (`npm install`) if Node.js is available
+5. Create `~/.openharness/` config directory
+6. Confirm with `oh --version`
+
 ### Prerequisites
 
 - **Python 3.10+** and [uv](https://docs.astral.sh/uv/)
