@@ -568,6 +568,12 @@ def main(
         help="API format: 'anthropic' (default), 'openai' (DashScope, GitHub Models, etc.), or 'copilot' (GitHub Copilot)",
         rich_help_panel="System & Context",
     ),
+    theme: str | None = typer.Option(
+        None,
+        "--theme",
+        help="TUI theme: default, dark, minimal, cyberpunk, solarized, or custom name",
+        rich_help_panel="System & Context",
+    ),
     # --- Advanced ---
     debug: bool = typer.Option(
         False,
@@ -603,6 +609,14 @@ def main(
 
     if dangerously_skip_permissions:
         permission_mode = "full_auto"
+
+    # Apply --theme override to settings
+    if theme:
+        from openharness.config.settings import load_settings, save_settings
+
+        settings = load_settings()
+        settings.theme = theme
+        save_settings(settings)
 
     from openharness.ui.app import run_print_mode, run_repl
 
