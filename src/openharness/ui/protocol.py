@@ -68,6 +68,9 @@ class BackendEvent(BaseModel):
         "clear_transcript",
         "modal_request",
         "select_request",
+        "todo_update",
+        "plan_mode_change",
+        "swarm_status",
         "error",
         "shutdown",
     ]
@@ -84,6 +87,11 @@ class BackendEvent(BaseModel):
     tool_input: dict[str, Any] | None = None
     output: str | None = None
     is_error: bool | None = None
+    # New fields for enhanced events
+    todo_markdown: str | None = None
+    plan_mode: str | None = None
+    swarm_teammates: list[dict[str, Any]] | None = None
+    swarm_notifications: list[dict[str, Any]] | None = None
 
     @classmethod
     def ready(
