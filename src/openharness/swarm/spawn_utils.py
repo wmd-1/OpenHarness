@@ -57,6 +57,13 @@ _TEAMMATE_ENV_VARS = [
     "NODE_EXTRA_CA_CERTS",
     "REQUESTS_CA_BUNDLE",
     "CURL_CA_BUNDLE",
+    # --- OpenHarness-native provider settings --------------------------------
+    # These are read by settings._apply_env_overrides() and must survive across
+    # tmux boundaries so teammates use the same provider as the leader.
+    "OPENHARNESS_API_FORMAT",
+    "OPENHARNESS_BASE_URL",
+    "OPENHARNESS_MODEL",
+    "OPENAI_API_KEY",
 ]
 
 

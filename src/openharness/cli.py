@@ -287,6 +287,113 @@ def auth_logout() -> None:
     print("Authentication cleared.")
 
 
+@auth_app.command("copilot-login")
+def auth_copilot_login() -> None:
+    """Authenticate with GitHub Copilot via device flow."""
+    import platform
+    import subprocess
+
+    from openharness.api.copilot_auth import (
+        poll_for_access_token,
+        request_device_code,
+        save_copilot_auth,
+    )
+
+    # --- Deployment type selection ---
+    print("Select GitHub deployment type:", flush=True)
+    print("  1. GitHub.com (public)", flush=True)
+    print("  2. GitHub Enterprise (data residency / self-hosted)", flush=True)
+    choice = typer.prompt("Enter choice", default="1")
+
+    enterprise_url: str | None = None
+    github_domain = "github.com"
+
+    if choice.strip() == "2":
+        raw_url = typer.prompt(
+            "Enter your GitHub Enterprise URL or domain (e.g. company.ghe.com)"
+        )
+        # Normalise: strip scheme and trailing slash
+        domain = raw_url.replace("https://", "").replace("http://", "").rstrip("/")
+        if not domain:
+            print("Error: domain cannot be empty.", file=sys.stderr, flush=True)
+            raise typer.Exit(1)
+        enterprise_url = domain
+        github_domain = domain
+
+    print(flush=True)
+    print("Starting GitHub Copilot device flow...", flush=True)
+    dc = request_device_code(github_domain=github_domain)
+    print(flush=True)
+    print(f"  Open: {dc.verification_uri}", flush=True)
+    print(f"  Code: {dc.user_code}", flush=True)
+    print(flush=True)
+
+    # Attempt to open browser via platform command (non-blocking).
+    # Unlike webbrowser.open(), subprocess won't hang in WSL/headless.
+    _opened = False
+    try:
+        plat = platform.system()
+        if plat == "Darwin":
+            subprocess.Popen(["open", dc.verification_uri], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            _opened = True
+        elif plat == "Windows":
+            subprocess.Popen(["start", "", dc.verification_uri], shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            _opened = True
+        else:
+            # Linux / WSL — xdg-open may or may not work
+            result = subprocess.Popen(
+                ["xdg-open", dc.verification_uri],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            # Give it a moment to fail fast if xdg-open is missing
+            try:
+                result.wait(timeout=2)
+                _opened = result.returncode == 0
+            except subprocess.TimeoutExpired:
+                _opened = True  # Probably launched something
+    except Exception:
+        pass
+
+    if _opened:
+        print("(Browser opened \u2014 enter the code shown above.)", flush=True)
+    else:
+        print("Open the URL above in your browser and enter the code.", flush=True)
+    print(flush=True)
+
+    def _show_progress(poll_num: int, elapsed: float) -> None:
+        mins = int(elapsed) // 60
+        secs = int(elapsed) % 60
+        print(f"\r  Polling... ({mins}m {secs:02d}s elapsed)", end="", flush=True)
+
+    print("Waiting for authorisation...", flush=True)
+    try:
+        token = poll_for_access_token(
+            dc.device_code, dc.interval,
+            github_domain=github_domain,
+            progress_callback=_show_progress,
+        )
+    except RuntimeError as exc:
+        print(flush=True)  # newline after progress
+        print(f"Error: {exc}", file=sys.stderr, flush=True)
+        raise typer.Exit(1)
+    print(flush=True)  # newline after progress
+    save_copilot_auth(token, enterprise_url=enterprise_url)
+    print("GitHub Copilot authenticated successfully.", flush=True)
+    if enterprise_url:
+        print(f"  Enterprise domain: {enterprise_url}", flush=True)
+    print(flush=True)
+    print("To use Copilot as the provider, run:", flush=True)
+    print("  oh --api-format copilot", flush=True)
+    print("  # or set OPENHARNESS_API_FORMAT=copilot", flush=True)
+@auth_app.command("copilot-logout")
+def auth_copilot_logout() -> None:
+    """Remove stored GitHub Copilot authentication."""
+    from openharness.api.copilot_auth import clear_github_token
+
+    clear_github_token()
+    print("Copilot authentication cleared.")
+
 # ---------------------------------------------------------------------------
 # Main command
 # ---------------------------------------------------------------------------
@@ -423,7 +530,7 @@ def main(
     api_format: str | None = typer.Option(
         None,
         "--api-format",
-        help="API format: 'anthropic' (default) or 'openai' (for DashScope, GitHub Models, etc.)",
+        help="API format: 'anthropic' (default), 'openai' (DashScope, GitHub Models, etc.), or 'copilot' (GitHub Copilot)",
         rich_help_panel="System & Context",
     ),
     # --- Advanced ---

@@ -208,7 +208,7 @@ oh -p "Fix the bug" --output-format stream-json
 
 ## 🔌 Provider Compatibility
 
-OpenHarness supports two API formats: **Anthropic** (default) and **OpenAI-compatible** (`--api-format openai`). The OpenAI format covers a wide range of providers.
+OpenHarness supports three API formats: **Anthropic** (default), **OpenAI-compatible** (`--api-format openai`), and **GitHub Copilot** (`--api-format copilot`). The OpenAI format covers a wide range of providers.
 
 ### Anthropic Format (default)
 
@@ -248,6 +248,36 @@ export OPENHARNESS_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 export OPENHARNESS_MODEL=qwen3.5-flash
 uv run oh
 ```
+
+### GitHub Copilot Format (`--api-format copilot`)
+
+Use your existing GitHub Copilot subscription as the LLM backend. Authentication uses GitHub's OAuth device flow — no API keys needed.
+
+```bash
+# One-time login (opens browser for GitHub authorization)
+oh auth copilot-login
+
+# Then launch with Copilot as the provider
+uv run oh --api-format copilot
+
+# Or via environment variable
+export OPENHARNESS_API_FORMAT=copilot
+uv run oh
+
+# Check auth status
+oh auth status
+
+# Remove stored credentials
+oh auth copilot-logout
+```
+
+| Feature | Details |
+|---------|---------|
+| **Auth method** | GitHub OAuth device flow (no API key needed) |
+| **Token management** | Automatic refresh of short-lived session tokens |
+| **Enterprise** | Supports GitHub Enterprise via `--github-domain` flag |
+| **Models** | Uses Copilot's default model selection |
+| **API** | OpenAI-compatible chat completions under the hood |
 
 ---
 
