@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -115,7 +116,16 @@ def wrap_command_for_sandbox(
         return command, None
 
     settings_path = _write_runtime_settings(build_sandbox_runtime_config(resolved_settings))
-    wrapped = [availability.command or "srt", "--settings", str(settings_path), *command]
+    # The ``srt`` argv form does not reliably preserve child exit codes for shell-style
+    # commands such as ``bash -lc 'exit 1'``. Build a single escaped command string and
+    # pass it through ``-c`` so hook/tool failures still propagate correctly.
+    wrapped = [
+        availability.command or "srt",
+        "--settings",
+        str(settings_path),
+        "-c",
+        shlex.join(command),
+    ]
     return wrapped, settings_path
 
 
@@ -134,4 +144,3 @@ def _write_runtime_settings(payload: dict[str, Any]) -> Path:
     finally:
         tmp.close()
     return Path(tmp.name)
-

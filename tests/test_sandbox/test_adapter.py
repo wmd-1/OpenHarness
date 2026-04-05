@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import shutil
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -13,6 +17,7 @@ from openharness.sandbox.adapter import (
     get_sandbox_availability,
     wrap_command_for_sandbox,
 )
+from openharness.utils.shell import create_shell_subprocess
 
 
 def test_build_sandbox_runtime_config_maps_settings():
@@ -63,7 +68,8 @@ def test_wrap_command_for_sandbox_writes_settings_file(monkeypatch):
 
     command, settings_path = wrap_command_for_sandbox(["bash", "-lc", "echo hi"], settings=settings)
 
-    assert command[:3] == ["/usr/local/bin/srt", "--settings", str(settings_path)]
+    assert command[:4] == ["/usr/local/bin/srt", "--settings", str(settings_path), "-c"]
+    assert command[4] == "bash -lc 'echo hi'"
     assert settings_path is not None and settings_path.exists()
     payload = json.loads(settings_path.read_text(encoding="utf-8"))
     assert payload["filesystem"]["allowWrite"] == ["."]
@@ -77,3 +83,33 @@ def test_wrap_command_for_sandbox_raises_when_required(monkeypatch):
 
     with pytest.raises(SandboxUnavailableError):
         wrap_command_for_sandbox(["bash", "-lc", "echo hi"], settings=settings)
+
+
+@pytest.mark.skipif(shutil.which("srt") is None or shutil.which("bwrap") is None, reason="Needs local sandbox runtime")
+def test_create_shell_subprocess_preserves_exit_code_with_sandbox(monkeypatch):
+    import openharness.config.paths as config_paths
+
+    async def _run() -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = Path(tmpdir) / "settings.json"
+            from openharness.config.settings import save_settings
+
+            save_settings(Settings(sandbox=SandboxSettings(enabled=True, fail_if_unavailable=True)), cfg)
+            orig = config_paths.get_config_file_path
+            monkeypatch.setattr(config_paths, "get_config_file_path", lambda: cfg)
+            try:
+                process = await create_shell_subprocess(
+                    "exit 7",
+                    cwd=Path("/home/tangjiabin/OpenHarness-new"),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await process.communicate()
+            finally:
+                monkeypatch.setattr(config_paths, "get_config_file_path", orig)
+
+        assert process.returncode == 7
+        assert stdout == b""
+        assert stderr == b""
+
+    asyncio.run(_run())
