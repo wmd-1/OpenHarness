@@ -41,9 +41,18 @@ class ToolExecutionCompleted:
     is_error: bool = False
 
 
+@dataclass(frozen=True)
+class ErrorEvent:
+    """An error that should be surfaced to the user."""
+
+    message: str
+    recoverable: bool = True
+
+
 StreamEvent = (
     AssistantTextDelta
     | AssistantTurnComplete
     | ToolExecutionStarted
     | ToolExecutionCompleted
+    | ErrorEvent
 )

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import sys
 from dataclasses import dataclass
@@ -22,6 +23,8 @@ from openharness.engine.stream_events import (
 from openharness.tasks import get_task_manager
 from openharness.ui.protocol import BackendEvent, FrontendRequest, TranscriptItem
 from openharness.ui.runtime import build_runtime, close_runtime, handle_line, start_runtime
+
+log = logging.getLogger(__name__)
 
 _PROTOCOL_PREFIX = "OHJSON:"
 
@@ -296,7 +299,10 @@ class ReactBackendHost:
             )
         )
         try:
-            return await future
+            return await asyncio.wait_for(future, timeout=300)
+        except asyncio.TimeoutError:
+            log.warning("Permission request %s timed out after 300s, denying", request_id)
+            return False
         finally:
             self._permission_requests.pop(request_id, None)
 
