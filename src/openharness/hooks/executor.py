@@ -24,6 +24,8 @@ from openharness.hooks.schemas import (
     PromptHookDefinition,
 )
 from openharness.hooks.types import AggregatedHookResult, HookResult
+from openharness.sandbox import SandboxUnavailableError
+from openharness.utils.shell import create_shell_subprocess
 
 
 @dataclass
@@ -69,19 +71,25 @@ class HookExecutor:
         payload: dict[str, Any],
     ) -> HookResult:
         command = _inject_arguments(hook.command, payload)
-        process = await asyncio.create_subprocess_exec(
-            "/bin/bash",
-            "-lc",
-            command,
-            cwd=str(self._context.cwd),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env={
-                **os.environ,
-                "OPENHARNESS_HOOK_EVENT": event.value,
-                "OPENHARNESS_HOOK_PAYLOAD": json.dumps(payload),
-            },
-        )
+        try:
+            process = await create_shell_subprocess(
+                command,
+                cwd=self._context.cwd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env={
+                    **os.environ,
+                    "OPENHARNESS_HOOK_EVENT": event.value,
+                    "OPENHARNESS_HOOK_PAYLOAD": json.dumps(payload),
+                },
+            )
+        except SandboxUnavailableError as exc:
+            return HookResult(
+                hook_type=hook.type,
+                success=False,
+                blocked=hook.block_on_failure,
+                reason=str(exc),
+            )
 
         try:
             stdout, stderr = await asyncio.wait_for(

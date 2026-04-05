@@ -46,6 +46,32 @@ class MemorySettings(BaseModel):
     max_entrypoint_lines: int = 200
 
 
+class SandboxNetworkSettings(BaseModel):
+    """OS-level network restrictions passed to sandbox-runtime."""
+
+    allowed_domains: list[str] = Field(default_factory=list)
+    denied_domains: list[str] = Field(default_factory=list)
+
+
+class SandboxFilesystemSettings(BaseModel):
+    """OS-level filesystem restrictions passed to sandbox-runtime."""
+
+    allow_read: list[str] = Field(default_factory=list)
+    deny_read: list[str] = Field(default_factory=list)
+    allow_write: list[str] = Field(default_factory=lambda: ["."])
+    deny_write: list[str] = Field(default_factory=list)
+
+
+class SandboxSettings(BaseModel):
+    """Sandbox-runtime integration settings."""
+
+    enabled: bool = False
+    fail_if_unavailable: bool = False
+    enabled_platforms: list[str] = Field(default_factory=list)
+    network: SandboxNetworkSettings = Field(default_factory=SandboxNetworkSettings)
+    filesystem: SandboxFilesystemSettings = Field(default_factory=SandboxFilesystemSettings)
+
+
 class Settings(BaseModel):
     """Main settings model for OpenHarness."""
 
@@ -62,6 +88,7 @@ class Settings(BaseModel):
     permission: PermissionSettings = Field(default_factory=PermissionSettings)
     hooks: dict[str, list[HookDefinition]] = Field(default_factory=dict)
     memory: MemorySettings = Field(default_factory=MemorySettings)
+    sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
     enabled_plugins: dict[str, bool] = Field(default_factory=dict)
     mcp_servers: dict[str, McpServerConfig] = Field(default_factory=dict)
 
@@ -138,9 +165,24 @@ def _apply_env_overrides(settings: Settings) -> Settings:
     if api_format:
         updates["api_format"] = api_format
 
+    sandbox_enabled = os.environ.get("OPENHARNESS_SANDBOX_ENABLED")
+    sandbox_fail = os.environ.get("OPENHARNESS_SANDBOX_FAIL_IF_UNAVAILABLE")
+    sandbox_updates: dict[str, Any] = {}
+    if sandbox_enabled is not None:
+        sandbox_updates["enabled"] = _parse_bool_env(sandbox_enabled)
+    if sandbox_fail is not None:
+        sandbox_updates["fail_if_unavailable"] = _parse_bool_env(sandbox_fail)
+    if sandbox_updates:
+        updates["sandbox"] = settings.sandbox.model_copy(update=sandbox_updates)
+
     if not updates:
         return settings
     return settings.model_copy(update=updates)
+
+
+def _parse_bool_env(value: str) -> bool:
+    """Parse a boolean environment override."""
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def load_settings(config_path: Path | None = None) -> Settings:

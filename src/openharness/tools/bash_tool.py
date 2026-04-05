@@ -7,7 +7,9 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from openharness.sandbox import SandboxUnavailableError
 from openharness.tools.base import BaseTool, ToolExecutionContext, ToolResult
+from openharness.utils.shell import create_shell_subprocess
 
 
 class BashToolInput(BaseModel):
@@ -27,14 +29,15 @@ class BashTool(BaseTool):
 
     async def execute(self, arguments: BashToolInput, context: ToolExecutionContext) -> ToolResult:
         cwd = Path(arguments.cwd).expanduser() if arguments.cwd else context.cwd
-        process = await asyncio.create_subprocess_exec(
-            "/bin/bash",
-            "-lc",
-            arguments.command,
-            cwd=str(cwd),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        try:
+            process = await create_shell_subprocess(
+                arguments.command,
+                cwd=cwd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except SandboxUnavailableError as exc:
+            return ToolResult(output=str(exc), is_error=True)
 
         try:
             stdout, stderr = await asyncio.wait_for(

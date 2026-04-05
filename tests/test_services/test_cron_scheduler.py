@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -131,10 +131,11 @@ class TestExecuteJob:
 
             # Need to mock create_subprocess_exec to return a mock process
             mock_process = AsyncMock()
-            mock_process.kill = AsyncMock()
+            mock_process.communicate = Mock(return_value=object())
+            mock_process.kill = Mock()
             mock_process.wait = AsyncMock()
             with patch(
-                "openharness.services.cron_scheduler.asyncio.create_subprocess_exec",
+                "openharness.utils.shell.asyncio.create_subprocess_exec",
                 return_value=mock_process,
             ):
                 job = {"name": "slow-test", "command": "sleep 999", "cwd": "/tmp"}

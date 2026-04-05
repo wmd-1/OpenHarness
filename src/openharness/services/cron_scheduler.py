@@ -25,6 +25,8 @@ from openharness.services.cron import (
     mark_job_run,
     validate_cron_expression,
 )
+from openharness.sandbox import SandboxUnavailableError
+from openharness.utils.shell import create_shell_subprocess
 
 logger = logging.getLogger(__name__)
 
@@ -154,11 +156,9 @@ async def execute_job(job: dict[str, Any]) -> dict[str, Any]:
 
     logger.info("Executing cron job %r: %s", name, command)
     try:
-        process = await asyncio.create_subprocess_exec(
-            "/bin/bash",
-            "-lc",
+        process = await create_shell_subprocess(
             command,
-            cwd=str(cwd),
+            cwd=cwd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -181,6 +181,20 @@ async def execute_job(job: dict[str, Any]) -> dict[str, Any]:
             "status": "timeout",
             "stdout": "",
             "stderr": "Job timed out after 300s",
+        }
+        mark_job_run(name, success=False)
+        append_history(entry)
+        return entry
+    except SandboxUnavailableError as exc:
+        entry = {
+            "name": name,
+            "command": command,
+            "started_at": started_at.isoformat(),
+            "ended_at": datetime.now(timezone.utc).isoformat(),
+            "returncode": -1,
+            "status": "error",
+            "stdout": "",
+            "stderr": str(exc),
         }
         mark_job_run(name, success=False)
         append_history(entry)

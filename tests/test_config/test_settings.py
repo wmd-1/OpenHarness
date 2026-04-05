@@ -19,6 +19,8 @@ class TestSettings:
         assert s.max_turns == 200
         assert s.fast_mode is False
         assert s.permission.mode == "default"
+        assert s.sandbox.enabled is False
+        assert s.sandbox.filesystem.allow_write == ["."]
 
     def test_resolve_api_key_from_instance(self):
         s = Settings(api_key="sk-test-123")
@@ -107,6 +109,8 @@ class TestLoadSaveSettings:
         monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://env.example/anthropic")
         monkeypatch.setenv("OPENHARNESS_MAX_TURNS", "42")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-env-override")
+        monkeypatch.setenv("OPENHARNESS_SANDBOX_ENABLED", "true")
+        monkeypatch.setenv("OPENHARNESS_SANDBOX_FAIL_IF_UNAVAILABLE", "1")
 
         s = load_settings(path)
 
@@ -114,3 +118,28 @@ class TestLoadSaveSettings:
         assert s.base_url == "https://env.example/anthropic"
         assert s.max_turns == 42
         assert s.api_key == "sk-env-override"
+        assert s.sandbox.enabled is True
+        assert s.sandbox.fail_if_unavailable is True
+
+    def test_load_with_sandbox_settings(self, tmp_path: Path):
+        path = tmp_path / "settings.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "sandbox": {
+                        "enabled": True,
+                        "enabled_platforms": ["linux", "wsl"],
+                        "network": {"allowed_domains": ["github.com"]},
+                        "filesystem": {"allow_write": [".", "/tmp"], "deny_write": [".env"]},
+                    }
+                }
+            )
+        )
+
+        s = load_settings(path)
+
+        assert s.sandbox.enabled is True
+        assert s.sandbox.enabled_platforms == ["linux", "wsl"]
+        assert s.sandbox.network.allowed_domains == ["github.com"]
+        assert s.sandbox.filesystem.allow_write == [".", "/tmp"]
+        assert s.sandbox.filesystem.deny_write == [".env"]
