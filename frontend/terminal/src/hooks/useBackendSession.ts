@@ -8,6 +8,8 @@ import type {
 	FrontendConfig,
 	McpServerSnapshot,
 	SelectOptionPayload,
+	SwarmNotificationSnapshot,
+	SwarmTeammateSnapshot,
 	TaskSnapshot,
 	TranscriptItem,
 } from '../types.js';
@@ -28,6 +30,9 @@ export function useBackendSession(config: FrontendConfig, onExit: (code?: number
 	const [selectRequest, setSelectRequest] = useState<{title: string; submitPrefix: string; options: SelectOptionPayload[]} | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [ready, setReady] = useState(false);
+	const [todoMarkdown, setTodoMarkdown] = useState('');
+	const [swarmTeammates, setSwarmTeammates] = useState<SwarmTeammateSnapshot[]>([]);
+	const [swarmNotifications, setSwarmNotifications] = useState<SwarmNotificationSnapshot[]>([]);
 	const childRef = useRef<ChildProcessWithoutNullStreams | null>(null);
 	const sentInitialPrompt = useRef(false);
 
@@ -220,6 +225,27 @@ export function useBackendSession(config: FrontendConfig, onExit: (code?: number
 			setBusy(false);
 			return;
 		}
+		if (event.type === 'todo_update') {
+			if (event.todo_markdown != null) {
+				setTodoMarkdown(event.todo_markdown);
+			}
+			return;
+		}
+		if (event.type === 'swarm_status') {
+			if (event.swarm_teammates != null) {
+				setSwarmTeammates(event.swarm_teammates);
+			}
+			if (event.swarm_notifications != null) {
+				setSwarmNotifications((prev) => [...prev, ...event.swarm_notifications!].slice(-20));
+			}
+			return;
+		}
+		if (event.type === 'plan_mode_change') {
+			if (event.plan_mode != null) {
+				setStatus((s) => ({...s, permission_mode: event.plan_mode}));
+			}
+			return;
+		}
 		if (event.type === 'shutdown') {
 			onExit(0);
 		}
@@ -238,11 +264,14 @@ export function useBackendSession(config: FrontendConfig, onExit: (code?: number
 			selectRequest,
 			busy,
 			ready,
+			todoMarkdown,
+			swarmTeammates,
+			swarmNotifications,
 			setModal,
 			setSelectRequest,
 			setBusy,
 			sendRequest,
 		}),
-		[assistantBuffer, bridgeSessions, busy, commands, mcpServers, modal, ready, selectRequest, status, tasks, transcript]
+		[assistantBuffer, bridgeSessions, busy, commands, mcpServers, modal, ready, selectRequest, status, swarmNotifications, swarmTeammates, tasks, todoMarkdown, transcript]
 	);
 }
