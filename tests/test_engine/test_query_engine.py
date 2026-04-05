@@ -18,7 +18,7 @@ from openharness.engine.stream_events import (
     ToolExecutionCompleted,
     ToolExecutionStarted,
 )
-from openharness.permissions import PermissionChecker
+from openharness.permissions import PermissionChecker, PermissionMode
 from openharness.tools import create_default_tool_registry
 from openharness.hooks import HookExecutionContext, HookExecutor, HookEvent
 from openharness.hooks.loader import HookRegistry
@@ -249,3 +249,107 @@ async def test_query_engine_executes_ask_user_tool(tmp_path: Path):
     assert tool_results[0].output == "green"
     assert isinstance(events[-1], AssistantTurnComplete)
     assert events[-1].message.text == "Picked green."
+
+
+@pytest.mark.asyncio
+async def test_query_engine_applies_path_rules_to_relative_read_file_targets(tmp_path: Path):
+    blocked_dir = tmp_path / "blocked"
+    blocked_dir.mkdir()
+    secret = blocked_dir / "secret.txt"
+    secret.write_text("top-secret\n", encoding="utf-8")
+
+    engine = QueryEngine(
+        api_client=FakeApiClient(
+            [
+                _FakeResponse(
+                    message=ConversationMessage(
+                        role="assistant",
+                        content=[
+                            ToolUseBlock(
+                                id="toolu_blocked_read",
+                                name="read_file",
+                                input={"path": "blocked/secret.txt", "offset": 0, "limit": 1},
+                            )
+                        ],
+                    ),
+                    usage=UsageSnapshot(input_tokens=1, output_tokens=1),
+                ),
+                _FakeResponse(
+                    message=ConversationMessage(
+                        role="assistant",
+                        content=[TextBlock(text="blocked")],
+                    ),
+                    usage=UsageSnapshot(input_tokens=1, output_tokens=1),
+                ),
+            ]
+        ),
+        tool_registry=create_default_tool_registry(),
+        permission_checker=PermissionChecker(
+            PermissionSettings(
+                mode=PermissionMode.DEFAULT,
+                path_rules=[{"pattern": str((blocked_dir / "*").resolve()), "allow": False}],
+            )
+        ),
+        cwd=tmp_path,
+        model="claude-test",
+        system_prompt="system",
+    )
+
+    events = [event async for event in engine.submit_message("read blocked file")]
+
+    tool_results = [event for event in events if isinstance(event, ToolExecutionCompleted)]
+    assert tool_results
+    assert tool_results[0].is_error is True
+    assert "matches deny rule" in tool_results[0].output
+
+
+@pytest.mark.asyncio
+async def test_query_engine_applies_path_rules_to_write_file_targets_in_full_auto(tmp_path: Path):
+    blocked_dir = tmp_path / "blocked"
+    blocked_dir.mkdir()
+    target = blocked_dir / "output.txt"
+
+    engine = QueryEngine(
+        api_client=FakeApiClient(
+            [
+                _FakeResponse(
+                    message=ConversationMessage(
+                        role="assistant",
+                        content=[
+                            ToolUseBlock(
+                                id="toolu_blocked_write",
+                                name="write_file",
+                                input={"path": "blocked/output.txt", "content": "poc"},
+                            )
+                        ],
+                    ),
+                    usage=UsageSnapshot(input_tokens=1, output_tokens=1),
+                ),
+                _FakeResponse(
+                    message=ConversationMessage(
+                        role="assistant",
+                        content=[TextBlock(text="blocked")],
+                    ),
+                    usage=UsageSnapshot(input_tokens=1, output_tokens=1),
+                ),
+            ]
+        ),
+        tool_registry=create_default_tool_registry(),
+        permission_checker=PermissionChecker(
+            PermissionSettings(
+                mode=PermissionMode.FULL_AUTO,
+                path_rules=[{"pattern": str((blocked_dir / "*").resolve()), "allow": False}],
+            )
+        ),
+        cwd=tmp_path,
+        model="claude-test",
+        system_prompt="system",
+    )
+
+    events = [event async for event in engine.submit_message("write blocked file")]
+
+    tool_results = [event for event in events if isinstance(event, ToolExecutionCompleted)]
+    assert tool_results
+    assert tool_results[0].is_error is True
+    assert "matches deny rule" in tool_results[0].output
+    assert target.exists() is False
