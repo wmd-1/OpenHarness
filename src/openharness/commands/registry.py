@@ -1031,17 +1031,83 @@ def create_default_command_registry() -> CommandRegistry:
         return CommandResult(message="Usage: /model [show|set MODEL]")
 
     async def _theme_handler(args: str, context: CommandContext) -> CommandResult:
+        from openharness.themes import list_themes, load_theme
+
         settings = load_settings()
         tokens = args.split(maxsplit=1)
+        current = (
+            context.app_state.get().theme
+            if context.app_state is not None and hasattr(context.app_state.get(), "theme")
+            else settings.theme
+        )
+
         if not tokens or tokens[0] == "show":
-            return CommandResult(message=f"Theme: {settings.theme}")
+            try:
+                theme = load_theme(current)
+                lines = [
+                    f"Theme: {theme.name}",
+                    f"  Colors:  primary={theme.colors.primary}  secondary={theme.colors.secondary}"
+                    f"  accent={theme.colors.accent}  error={theme.colors.error}"
+                    f"  muted={theme.colors.muted}",
+                    f"           background={theme.colors.background}  foreground={theme.colors.foreground}",
+                    f"  Borders: style={theme.borders.style}",
+                    f"  Icons:   spinner={theme.icons.spinner}  tool={theme.icons.tool}"
+                    f"  error={theme.icons.error}  success={theme.icons.success}"
+                    f"  agent={theme.icons.agent}",
+                    f"  Layout:  compact={theme.layout.compact}"
+                    f"  show_tokens={theme.layout.show_tokens}"
+                    f"  show_time={theme.layout.show_time}",
+                ]
+                return CommandResult(message="\n".join(lines))
+            except KeyError:
+                return CommandResult(message=f"Theme: {current} (not found)")
+
+        if tokens[0] == "list":
+            available = list_themes()
+            lines = [f"{'*' if name == current else ' '} {name}" for name in available]
+            return CommandResult(message="\n".join(lines))
+
         if tokens[0] == "set" and len(tokens) == 2:
-            settings.theme = tokens[1]
+            name = tokens[1]
+            try:
+                load_theme(name)
+            except KeyError:
+                available = list_themes()
+                return CommandResult(
+                    message=f"Unknown theme: {name!r}. Available: {', '.join(available)}"
+                )
+            settings.theme = name
             save_settings(settings)
             if context.app_state is not None:
-                context.app_state.set(theme=tokens[1])
-            return CommandResult(message=f"Theme set to {tokens[1]}")
-        return CommandResult(message="Usage: /theme [show|set THEME]")
+                context.app_state.set(theme=name)
+            return CommandResult(message=f"Theme set to {name}")
+
+        if tokens[0] == "preview" and len(tokens) == 2:
+            name = tokens[1]
+            try:
+                theme = load_theme(name)
+            except KeyError:
+                available = list_themes()
+                return CommandResult(
+                    message=f"Unknown theme: {name!r}. Available: {', '.join(available)}"
+                )
+            lines = [
+                f"Preview: {theme.name}",
+                f"  primary    {theme.colors.primary}",
+                f"  secondary  {theme.colors.secondary}",
+                f"  accent     {theme.colors.accent}",
+                f"  error      {theme.colors.error}",
+                f"  muted      {theme.colors.muted}",
+                f"  background {theme.colors.background}",
+                f"  foreground {theme.colors.foreground}",
+                f"  borders    {theme.borders.style}",
+                f"  icons      spinner={theme.icons.spinner} tool={theme.icons.tool}"
+                f" success={theme.icons.success} error={theme.icons.error}"
+                f" agent={theme.icons.agent}",
+            ]
+            return CommandResult(message="\n".join(lines))
+
+        return CommandResult(message="Usage: /theme [list|show|set NAME|preview NAME]")
 
     async def _output_style_handler(args: str, context: CommandContext) -> CommandResult:
         settings = load_settings()
@@ -1353,7 +1419,7 @@ def create_default_command_registry() -> CommandRegistry:
     registry.register(SlashCommand("turns", "Show or update maximum agentic turn count", _turns_handler))
     registry.register(SlashCommand("continue", "Continue the previous tool loop if it was interrupted", _continue_handler))
     registry.register(SlashCommand("model", "Show or update the default model", _model_handler))
-    registry.register(SlashCommand("theme", "Show or update the theme", _theme_handler))
+    registry.register(SlashCommand("theme", "List, set, show or preview TUI themes", _theme_handler))
     registry.register(SlashCommand("output-style", "Show or update output style", _output_style_handler))
     registry.register(SlashCommand("keybindings", "Show resolved keybindings", _keybindings_handler))
     registry.register(SlashCommand("vim", "Show or update Vim mode", _vim_handler))
