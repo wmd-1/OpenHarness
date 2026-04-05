@@ -1,5 +1,7 @@
 """Tests for permission decisions."""
 
+import logging
+
 import pytest
 
 from openharness.config.settings import PathRuleConfig, PermissionSettings
@@ -59,13 +61,11 @@ def _settings_with_rules(*rules) -> PermissionSettings:
 )
 def test_invalid_pattern_rule_is_skipped_and_warns(bad_rule, caplog):
     """Rules with missing, empty, or non-string patterns are skipped with a warning."""
-    import logging
-
     settings = _settings_with_rules(bad_rule)
     with caplog.at_level(logging.WARNING, logger="openharness.permissions.checker"):
         checker = PermissionChecker(settings)
 
-    assert checker._path_rules == [], "invalid rule should not be added"
+    assert checker._path_rules == []
     assert "Skipping path rule" in caplog.text
 
 
