@@ -18,3 +18,4 @@ def test_create_default_tool_registry_does_not_import_mailbox_eagerly():
 
     assert registry.get("bash") is not None
     assert "openharness.swarm.mailbox" not in sys.modules
+    assert "openharness.swarm.lockfile" not in sys.modules
