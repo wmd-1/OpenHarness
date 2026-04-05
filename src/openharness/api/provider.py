@@ -4,7 +4,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from openharness.api.registry import detect_provider_from_registry
 from openharness.config.settings import Settings
+
+_AUTH_KIND: dict[str, str] = {
+    "anthropic": "api_key",
+    "openai_compat": "api_key",
+    "copilot": "oauth_device",
+}
+
+_VOICE_REASON: dict[str, str] = {
+    "anthropic": (
+        "voice mode shell exists, but live voice auth/streaming is not configured in this build"
+    ),
+    "openai_compat": "voice mode is not wired for OpenAI-compatible providers in this build",
+    "copilot": "voice mode is not supported for GitHub Copilot",
+}
 
 
 @dataclass(frozen=True)
@@ -18,87 +33,43 @@ class ProviderInfo:
 
 
 def detect_provider(settings: Settings) -> ProviderInfo:
-    """Infer the active provider and rough capability set."""
-    # Copilot is determined by api_format, not by base_url heuristics.
+    """Infer the active provider and rough capability set using the registry."""
     if settings.api_format == "copilot":
         return ProviderInfo(
-            name="github-copilot",
+            name="github_copilot",
             auth_kind="oauth_device",
             voice_supported=False,
-            voice_reason="voice mode is not supported for GitHub Copilot",
+            voice_reason=_VOICE_REASON["copilot"],
         )
+
+    spec = detect_provider_from_registry(
+        model=settings.model,
+        api_key=settings.api_key or None,
+        base_url=settings.base_url,
+    )
+
+    if spec is not None:
+        backend = spec.backend_type
+        return ProviderInfo(
+            name=spec.name,
+            auth_kind=_AUTH_KIND.get(backend, "api_key"),
+            voice_supported=False,
+            voice_reason=_VOICE_REASON.get(backend, "voice mode is not supported for this provider"),
+        )
+
+    # Fallback: use api_format to pick a sensible default
     if settings.api_format == "openai":
-        base_url = (settings.base_url or "").lower()
-        model = settings.model.lower()
-        if "dashscope" in base_url or model.startswith("qwen"):
-            return ProviderInfo(
-                name="dashscope-openai-compatible",
-                auth_kind="api_key",
-                voice_supported=False,
-                voice_reason="voice mode is not supported for DashScope providers",
-            )
-        if "models.inference.ai.azure.com" in base_url or "github" in base_url:
-            return ProviderInfo(
-                name="github-models-openai-compatible",
-                auth_kind="api_key",
-                voice_supported=False,
-                voice_reason="voice mode is not supported for GitHub Models",
-            )
         return ProviderInfo(
             name="openai-compatible",
             auth_kind="api_key",
             voice_supported=False,
-            voice_reason="voice mode is not wired for OpenAI-compatible providers in this build",
-        )
-    base_url = (settings.base_url or "").lower()
-    model = settings.model.lower()
-    if "moonshot" in base_url or model.startswith("kimi"):
-        return ProviderInfo(
-            name="moonshot-anthropic-compatible",
-            auth_kind="api_key",
-            voice_supported=False,
-            voice_reason="voice mode requires a Claude.ai-style authenticated voice backend",
-        )
-    if "dashscope" in base_url or model.startswith("qwen"):
-        return ProviderInfo(
-            name="dashscope-openai-compatible",
-            auth_kind="api_key",
-            voice_supported=False,
-            voice_reason="voice mode is not supported for DashScope providers",
-        )
-    if "models.inference.ai.azure.com" in base_url or "github" in base_url:
-        return ProviderInfo(
-            name="github-models-openai-compatible",
-            auth_kind="api_key",
-            voice_supported=False,
-            voice_reason="voice mode is not supported for GitHub Models",
-        )
-    if "bedrock" in base_url:
-        return ProviderInfo(
-            name="bedrock-compatible",
-            auth_kind="aws",
-            voice_supported=False,
-            voice_reason="voice mode is not wired for Bedrock in this build",
-        )
-    if "vertex" in base_url or "aiplatform" in base_url:
-        return ProviderInfo(
-            name="vertex-compatible",
-            auth_kind="gcp",
-            voice_supported=False,
-            voice_reason="voice mode is not wired for Vertex in this build",
-        )
-    if base_url:
-        return ProviderInfo(
-            name="anthropic-compatible",
-            auth_kind="api_key",
-            voice_supported=False,
-            voice_reason="voice mode currently requires a dedicated Claude.ai-style provider",
+            voice_reason=_VOICE_REASON["openai_compat"],
         )
     return ProviderInfo(
         name="anthropic",
         auth_kind="api_key",
         voice_supported=False,
-        voice_reason="voice mode shell exists, but live voice auth/streaming is not configured in this build",
+        voice_reason=_VOICE_REASON["anthropic"],
     )
 
 
