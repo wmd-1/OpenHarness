@@ -1,0 +1,516 @@
+"""CLI entry point for the ohmo personal-agent app."""
+
+from __future__ import annotations
+
+import asyncio
+import sys
+from pathlib import Path
+
+import typer
+
+from openharness.auth.manager import AuthManager
+from openharness.config import load_settings
+
+from ohmo.gateway.config import load_gateway_config, save_gateway_config
+from ohmo.gateway.models import GatewayConfig
+from ohmo.gateway.service import (
+    OhmoGatewayService,
+    gateway_status,
+    start_gateway_process,
+    stop_gateway_process,
+)
+from ohmo.memory import add_memory_entry, list_memory_files, remove_memory_entry
+from ohmo.runtime import launch_ohmo_react_tui, run_ohmo_backend, run_ohmo_print_mode
+from ohmo.session_storage import OhmoSessionBackend
+from ohmo.workspace import (
+    get_gateway_config_path,
+    get_soul_path,
+    get_state_path,
+    get_user_path,
+    initialize_workspace,
+    workspace_health,
+)
+
+
+app = typer.Typer(
+    name="ohmo",
+    help="ohmo: a personal-agent app built on top of OpenHarness.",
+    invoke_without_command=True,
+    add_completion=False,
+)
+memory_app = typer.Typer(name="memory", help="Manage .ohmo memory")
+soul_app = typer.Typer(name="soul", help="Inspect or edit soul.md")
+user_app = typer.Typer(name="user", help="Inspect or edit user.md")
+gateway_app = typer.Typer(name="gateway", help="Run the ohmo gateway")
+
+app.add_typer(memory_app)
+app.add_typer(soul_app)
+app.add_typer(user_app)
+app.add_typer(gateway_app)
+
+_INTERACTIVE_CHANNELS = ("telegram", "slack", "discord", "feishu")
+
+
+def _can_use_questionary() -> bool:
+    """Return True when a real interactive terminal is available."""
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return False
+    if sys.stdin is not sys.__stdin__ or sys.stdout is not sys.__stdout__:
+        return False
+    try:
+        import questionary  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def _select_with_questionary(
+    title: str,
+    options: list[tuple[str, str]],
+    *,
+    default_value: str | None = None,
+) -> str:
+    import questionary
+
+    choices = [
+        questionary.Choice(
+            title=label,
+            value=value,
+            checked=(value == default_value),
+        )
+        for value, label in options
+    ]
+    result = questionary.select(title, choices=choices, default=default_value).ask()
+    if result is None:
+        raise typer.Abort()
+    return str(result)
+
+
+def _confirm_prompt(message: str, *, default: bool = False) -> bool:
+    """Ask for confirmation, preferring questionary in a real TTY."""
+    if _can_use_questionary():
+        import questionary
+
+        result = questionary.confirm(message, default=default).ask()
+        if result is None:
+            raise typer.Abort()
+        return bool(result)
+    return typer.confirm(message, default=default)
+
+
+def _text_prompt(message: str, *, default: str = "") -> str:
+    """Prompt for text input, preferring questionary in a real TTY."""
+    if _can_use_questionary():
+        import questionary
+
+        result = questionary.text(message, default=default).ask()
+        if result is None:
+            raise typer.Abort()
+        return str(result)
+    return typer.prompt(message, default=default)
+
+
+def _select_from_menu(
+    title: str,
+    options: list[tuple[str, str]],
+    *,
+    default_value: str | None = None,
+) -> str:
+    """Render a simple numbered picker and return the selected value."""
+    if _can_use_questionary():
+        return _select_with_questionary(title, options, default_value=default_value)
+    print(title)
+    default_index = 1
+    for index, (value, label) in enumerate(options, 1):
+        marker = " (default)" if value == default_value else ""
+        if value == default_value:
+            default_index = index
+        print(f"  {index}. {label}{marker}")
+    raw = typer.prompt("Choose", default=str(default_index))
+    try:
+        selected = options[int(raw) - 1]
+    except (ValueError, IndexError):
+        raise typer.BadParameter(f"Invalid selection: {raw}") from None
+    return selected[0]
+
+
+def _prompt_provider_profile(cwd: str | Path) -> str:
+    settings = load_settings()
+    statuses = AuthManager(settings).get_profile_statuses()
+    options = [
+        (
+            name,
+            f"{info['label']} [{info['provider']}]"
+            + ("" if info["configured"] else " (missing auth)"),
+        )
+        for name, info in statuses.items()
+    ]
+    return _select_from_menu(
+        "Choose provider profile for ohmo:",
+        options,
+        default_value=load_gateway_config(cwd).provider_profile,
+    )
+
+
+def _prompt_channels(existing: GatewayConfig) -> tuple[list[str], dict[str, dict]]:
+    enabled: list[str] = []
+    configs: dict[str, dict] = {}
+    print("Configure channels for ohmo gateway:")
+    for channel in _INTERACTIVE_CHANNELS:
+        current = channel in existing.enabled_channels
+        if not _confirm_prompt(f"Enable {channel}?", default=current):
+            continue
+        enabled.append(channel)
+        prior = dict(existing.channel_configs.get(channel, {}))
+        allow_from_raw = _text_prompt(
+            f"{channel} allow_from (comma separated, '*' for everyone)",
+            default=",".join(prior.get("allow_from", ["*"])) or "*",
+        )
+        allow_from = [item.strip() for item in allow_from_raw.split(",") if item.strip()] or ["*"]
+        config: dict[str, object] = {"allow_from": allow_from}
+        if channel == "telegram":
+            config["token"] = _text_prompt(
+                "Telegram bot token",
+                default=str(prior.get("token", "")),
+            )
+            config["reply_to_message"] = _confirm_prompt(
+                "Reply to the original Telegram message?",
+                default=bool(prior.get("reply_to_message", True)),
+            )
+        elif channel == "slack":
+            config["bot_token"] = _text_prompt(
+                "Slack bot token",
+                default=str(prior.get("bot_token", "")),
+            )
+            config["app_token"] = _text_prompt(
+                "Slack app token",
+                default=str(prior.get("app_token", "")),
+            )
+            config["mode"] = "socket"
+            config["reply_in_thread"] = _confirm_prompt(
+                "Reply in thread?",
+                default=bool(prior.get("reply_in_thread", True)),
+            )
+            config["group_policy"] = _select_from_menu(
+                "Slack group policy:",
+                [
+                    ("mention", "Mention only"),
+                    ("open", "Always reply in channels"),
+                    ("allowlist", "Only allow configured channels"),
+                ],
+                default_value=str(prior.get("group_policy", "mention")),
+            )
+        elif channel == "discord":
+            config["token"] = _text_prompt(
+                "Discord bot token",
+                default=str(prior.get("token", "")),
+            )
+            config["gateway_url"] = _text_prompt(
+                "Discord gateway URL",
+                default=str(prior.get("gateway_url", "wss://gateway.discord.gg/?v=10&encoding=json")),
+            )
+            config["intents"] = int(
+                _text_prompt(
+                    "Discord intents bitmask",
+                    default=str(prior.get("intents", 513)),
+                )
+            )
+            config["group_policy"] = _select_from_menu(
+                "Discord group policy:",
+                [
+                    ("mention", "Mention only"),
+                    ("open", "Always reply in channels"),
+                ],
+                default_value=str(prior.get("group_policy", "mention")),
+            )
+        elif channel == "feishu":
+            config["app_id"] = _text_prompt(
+                "Feishu app id",
+                default=str(prior.get("app_id", "")),
+            )
+            config["app_secret"] = _text_prompt(
+                "Feishu app secret",
+                default=str(prior.get("app_secret", "")),
+            )
+            config["encrypt_key"] = _text_prompt(
+                "Feishu encrypt key",
+                default=str(prior.get("encrypt_key", "")),
+            )
+            config["verification_token"] = _text_prompt(
+                "Feishu verification token",
+                default=str(prior.get("verification_token", "")),
+            )
+            config["react_emoji"] = _text_prompt(
+                "Feishu reaction emoji",
+                default=str(prior.get("react_emoji", "OK")),
+            )
+        configs[channel] = config
+    return enabled, configs
+
+
+def _run_init_wizard(cwd: str | Path) -> GatewayConfig:
+    """Interactive init flow for provider/channel setup."""
+    existing = load_gateway_config(cwd)
+    provider_profile = _prompt_provider_profile(cwd)
+    enabled_channels, channel_configs = _prompt_channels(existing)
+    send_progress = _confirm_prompt(
+        "Send progress updates to channels?",
+        default=existing.send_progress,
+    )
+    send_tool_hints = _confirm_prompt(
+        "Send tool hints to channels?",
+        default=existing.send_tool_hints,
+    )
+    config = existing.model_copy(
+        update={
+            "provider_profile": provider_profile,
+            "enabled_channels": enabled_channels,
+            "channel_configs": channel_configs,
+            "send_progress": send_progress,
+            "send_tool_hints": send_tool_hints,
+        }
+    )
+    save_gateway_config(config, cwd)
+    return config
+
+
+@app.callback(invoke_without_command=True)
+def main(
+    ctx: typer.Context,
+    print_mode: str | None = typer.Option(None, "--print", "-p", help="Run a single prompt and exit"),
+    model: str | None = typer.Option(None, "--model", help="Model override for this session"),
+    profile: str | None = typer.Option(None, "--profile", help="Provider profile to use"),
+    workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)"),
+    max_turns: int | None = typer.Option(None, "--max-turns", help="Override max turns"),
+    cwd: str = typer.Option(str(Path.cwd()), "--cwd", help="Working directory"),
+    backend_only: bool = typer.Option(False, "--backend-only", hidden=True),
+    resume: str | None = typer.Option(None, "--resume", help="Resume an ohmo session by id"),
+    continue_session: bool = typer.Option(False, "--continue", help="Continue the latest ohmo session"),
+) -> None:
+    """Launch the ohmo app or invoke a subcommand."""
+    if ctx.invoked_subcommand is not None:
+        return
+
+    cwd_path = str(Path(cwd).resolve())
+    workspace_root = initialize_workspace(workspace)
+    backend = OhmoSessionBackend(workspace_root)
+    restore_messages = None
+    if continue_session:
+        latest = backend.load_latest(cwd_path)
+        if latest is None:
+            print("No previous ohmo session found in this directory.", file=sys.stderr)
+            raise typer.Exit(1)
+        restore_messages = latest.get("messages")
+    elif resume:
+        snapshot = backend.load_by_id(cwd_path, resume)
+        if snapshot is None:
+            print(f"ohmo session not found: {resume}", file=sys.stderr)
+            raise typer.Exit(1)
+        restore_messages = snapshot.get("messages")
+
+    if backend_only:
+        raise SystemExit(
+            asyncio.run(
+                run_ohmo_backend(
+                    cwd=cwd_path,
+                    workspace=workspace_root,
+                    model=model,
+                    max_turns=max_turns,
+                    provider_profile=profile,
+                    restore_messages=restore_messages,
+                )
+            )
+        )
+
+    if print_mode is not None:
+        raise SystemExit(
+            asyncio.run(
+                run_ohmo_print_mode(
+                    prompt=print_mode,
+                    cwd=cwd_path,
+                    workspace=workspace_root,
+                    model=model,
+                    max_turns=max_turns,
+                    provider_profile=profile,
+                )
+            )
+        )
+
+    raise SystemExit(
+        asyncio.run(
+            launch_ohmo_react_tui(
+                cwd=cwd_path,
+                workspace=workspace_root,
+                model=model,
+                max_turns=max_turns,
+                provider_profile=profile,
+            )
+        )
+    )
+
+
+@app.command("init")
+def init_cmd(
+    cwd: str = typer.Option(str(Path.cwd()), "--cwd", help="Project working directory (reserved for future project overrides)"),
+    workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)"),
+    interactive: bool = typer.Option(
+        True,
+        "--interactive/--no-interactive",
+        help="Run the provider/channel setup wizard when attached to a terminal",
+    ),
+) -> None:
+    """Initialize the .ohmo workspace."""
+    root = initialize_workspace(workspace)
+    print(f"Initialized ohmo workspace at {root}")
+    if interactive:
+        config = _run_init_wizard(root)
+        if config.enabled_channels:
+            print(
+                "Configured channels: "
+                + ", ".join(config.enabled_channels)
+                + f" | provider_profile={config.provider_profile}"
+            )
+        else:
+            print(f"Configured provider_profile={config.provider_profile}; no channels enabled yet.")
+        print(f"Saved gateway config to {get_gateway_config_path(root)}")
+
+
+@app.command("doctor")
+def doctor_cmd(
+    cwd: str = typer.Option(str(Path.cwd()), "--cwd", help="Project working directory"),
+    workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)"),
+) -> None:
+    """Check .ohmo workspace and provider readiness."""
+    cwd_path = str(Path(cwd).resolve())
+    workspace_root = initialize_workspace(workspace)
+    health = workspace_health(workspace_root)
+    settings = load_settings()
+    statuses = AuthManager(settings).get_profile_statuses()
+    lines = ["ohmo doctor:"]
+    for name, ok in health.items():
+        lines.append(f"- {name}: {'ok' if ok else 'missing'}")
+    lines.append(f"- project_cwd: {cwd_path}")
+    lines.append(f"- workspace_root: {workspace_root}")
+    lines.append(f"- workspace_state: {get_state_path(workspace_root)}")
+    lines.append(f"- gateway_config: {get_gateway_config_path(workspace_root)}")
+    lines.append("- available_profiles:")
+    for name, info in statuses.items():
+        lines.append(
+            f"  - {name}: {info['label']} ({'configured' if info['configured'] else 'missing auth'})"
+        )
+    print("\n".join(lines))
+
+
+@memory_app.command("list")
+def memory_list_cmd(workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)")) -> None:
+    for path in list_memory_files(workspace):
+        print(path.name)
+
+
+@memory_app.command("add")
+def memory_add_cmd(
+    title: str = typer.Argument(...),
+    content: str = typer.Argument(...),
+    workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)"),
+) -> None:
+    path = add_memory_entry(workspace, title, content)
+    print(f"Added memory entry {path.name}")
+
+
+@memory_app.command("remove")
+def memory_remove_cmd(
+    name: str = typer.Argument(...),
+    workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)"),
+) -> None:
+    if remove_memory_entry(workspace, name):
+        print(f"Removed memory entry {name}")
+        return
+    print(f"Memory entry not found: {name}", file=sys.stderr)
+    raise typer.Exit(1)
+
+
+def _show_or_edit(path: Path, set_text: str | None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if set_text is not None:
+        path.write_text(set_text.strip() + "\n", encoding="utf-8")
+        print(f"Updated {path}")
+        return
+    if not path.exists():
+        print(f"{path} does not exist yet.", file=sys.stderr)
+        raise typer.Exit(1)
+    print(path.read_text(encoding="utf-8"))
+
+
+@soul_app.command("show")
+def soul_show_cmd(workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)")) -> None:
+    _show_or_edit(get_soul_path(workspace), None)
+
+
+@soul_app.command("edit")
+def soul_edit_cmd(
+    workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)"),
+    set_text: str | None = typer.Option(None, "--set", help="Replace soul.md with this text"),
+) -> None:
+    _show_or_edit(get_soul_path(workspace), set_text)
+
+
+@user_app.command("show")
+def user_show_cmd(workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)")) -> None:
+    _show_or_edit(get_user_path(workspace), None)
+
+
+@user_app.command("edit")
+def user_edit_cmd(
+    workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)"),
+    set_text: str | None = typer.Option(None, "--set", help="Replace user.md with this text"),
+) -> None:
+    _show_or_edit(get_user_path(workspace), set_text)
+
+
+@gateway_app.command("run")
+def gateway_run_cmd(
+    cwd: str = typer.Option(str(Path.cwd()), "--cwd", help="Project working directory"),
+    workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)"),
+) -> None:
+    """Run the ohmo gateway in the foreground."""
+    service = OhmoGatewayService(cwd, workspace)
+    raise SystemExit(asyncio.run(service.run_foreground()))
+
+
+@gateway_app.command("start")
+def gateway_start_cmd(
+    cwd: str = typer.Option(str(Path.cwd()), "--cwd", help="Project working directory"),
+    workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)"),
+) -> None:
+    pid = start_gateway_process(cwd, workspace)
+    print(f"ohmo gateway started (pid={pid})")
+
+
+@gateway_app.command("stop")
+def gateway_stop_cmd(
+    cwd: str = typer.Option(str(Path.cwd()), "--cwd", help="Project working directory"),
+    workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)"),
+) -> None:
+    if stop_gateway_process(cwd, workspace):
+        print("ohmo gateway stopped.")
+        return
+    print("ohmo gateway is not running.")
+
+
+@gateway_app.command("restart")
+def gateway_restart_cmd(
+    cwd: str = typer.Option(str(Path.cwd()), "--cwd", help="Project working directory"),
+    workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)"),
+) -> None:
+    stop_gateway_process(cwd, workspace)
+    pid = start_gateway_process(cwd, workspace)
+    print(f"ohmo gateway restarted (pid={pid})")
+
+
+@gateway_app.command("status")
+def gateway_status_cmd(
+    cwd: str = typer.Option(str(Path.cwd()), "--cwd", help="Project working directory"),
+    workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)"),
+) -> None:
+    state = gateway_status(cwd, workspace)
+    print(state.model_dump_json(indent=2))

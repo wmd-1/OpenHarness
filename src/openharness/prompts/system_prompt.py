@@ -55,6 +55,11 @@ Carefully consider the reversibility and blast radius of actions. Freely take lo
  - If you can say it in one sentence, don't use three."""
 
 
+def get_base_system_prompt() -> str:
+    """Return the built-in base system prompt without environment info."""
+    return _BASE_SYSTEM_PROMPT
+
+
 def _format_environment_section(env: EnvironmentInfo) -> str:
     """Format the environment info section of the system prompt."""
     lines = [

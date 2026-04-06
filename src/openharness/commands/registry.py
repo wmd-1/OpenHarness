@@ -41,14 +41,8 @@ from openharness.permissions import PermissionChecker, PermissionMode
 from openharness.plugins import load_plugins
 from openharness.prompts import build_runtime_system_prompt
 from openharness.plugins.installer import install_plugin_from_path, uninstall_plugin
-from openharness.services import (
-    compact_messages,
-    estimate_conversation_tokens,
-    export_session_markdown,
-    save_session_snapshot,
-    summarize_messages,
-)
-from openharness.services.session_storage import get_project_session_dir, load_session_snapshot
+from openharness.services import compact_messages, estimate_conversation_tokens, summarize_messages
+from openharness.services.session_backend import DEFAULT_SESSION_BACKEND, SessionBackend
 from openharness.skills import load_skill_registry
 from openharness.tasks import get_task_manager
 
@@ -81,6 +75,7 @@ class CommandContext:
     cwd: str = "."
     tool_registry: ToolRegistry | None = None
     app_state: AppStateStore | None = None
+    session_backend: SessionBackend = DEFAULT_SESSION_BACKEND
 
 
 CommandHandler = Callable[[str, CommandContext], Awaitable[CommandResult]]
@@ -364,14 +359,12 @@ def create_default_command_registry() -> CommandRegistry:
         return CommandResult(message=context.hooks_summary or "No hooks configured.")
 
     async def _resume_handler(args: str, context: CommandContext) -> CommandResult:
-        from openharness.services.session_storage import list_session_snapshots, load_session_by_id
-
         tokens = args.strip().split()
 
         # /resume <session_id> — load a specific session
         if tokens:
             sid = tokens[0]
-            snapshot = load_session_by_id(context.cwd, sid)
+            snapshot = context.session_backend.load_by_id(context.cwd, sid)
             if snapshot is None:
                 return CommandResult(message=f"Session not found: {sid}")
             messages = [
@@ -387,10 +380,10 @@ def create_default_command_registry() -> CommandRegistry:
             )
 
         # /resume — list sessions (for the TUI to show a picker)
-        sessions = list_session_snapshots(context.cwd, limit=10)
+        sessions = context.session_backend.list_snapshots(context.cwd, limit=10)
         if not sessions:
             # Fall back to latest.json
-            snapshot = load_session_snapshot(context.cwd)
+            snapshot = context.session_backend.load_latest(context.cwd)
             if snapshot is None:
                 return CommandResult(message="No saved sessions found for this project.")
             messages = [
@@ -415,11 +408,11 @@ def create_default_command_registry() -> CommandRegistry:
         return CommandResult(message="\n".join(lines))
 
     async def _export_handler(_: str, context: CommandContext) -> CommandResult:
-        path = export_session_markdown(cwd=context.cwd, messages=context.engine.messages)
+        path = context.session_backend.export_markdown(cwd=context.cwd, messages=context.engine.messages)
         return CommandResult(message=f"Exported transcript to {path}")
 
     async def _share_handler(_: str, context: CommandContext) -> CommandResult:
-        path = export_session_markdown(cwd=context.cwd, messages=context.engine.messages)
+        path = context.session_backend.export_markdown(cwd=context.cwd, messages=context.engine.messages)
         return CommandResult(message=f"Created shareable transcript snapshot at {path}")
 
     async def _copy_handler(args: str, context: CommandContext) -> CommandResult:
@@ -432,7 +425,7 @@ def create_default_command_registry() -> CommandRegistry:
         return CommandResult(message=f"Clipboard unavailable. Saved copied text to {target}")
 
     async def _session_handler(args: str, context: CommandContext) -> CommandResult:
-        session_dir = get_project_session_dir(context.cwd)
+        session_dir = context.session_backend.get_session_dir(context.cwd)
         tokens = args.split()
         if not tokens or tokens[0] == "show":
             latest = session_dir / "latest.json"
@@ -453,14 +446,14 @@ def create_default_command_registry() -> CommandRegistry:
             safe_name = "".join(character for character in tokens[1] if character.isalnum() or character in {"-", "_"})
             if not safe_name:
                 return CommandResult(message="Usage: /session tag NAME")
-            snapshot_path = save_session_snapshot(
+            snapshot_path = context.session_backend.save_snapshot(
                 cwd=context.cwd,
                 model=context.app_state.get().model if context.app_state is not None else load_settings().model,
                 system_prompt=build_runtime_system_prompt(load_settings(), cwd=context.cwd),
                 messages=context.engine.messages,
                 usage=context.engine.total_usage,
             )
-            export_path = export_session_markdown(cwd=context.cwd, messages=context.engine.messages)
+            export_path = context.session_backend.export_markdown(cwd=context.cwd, messages=context.engine.messages)
             tagged_json = session_dir / f"{safe_name}.json"
             tagged_md = session_dir / f"{safe_name}.md"
             shutil.copy2(snapshot_path, tagged_json)
@@ -1321,7 +1314,7 @@ def create_default_command_registry() -> CommandRegistry:
 
     async def _privacy_settings_handler(_: str, context: CommandContext) -> CommandResult:
         settings = load_settings()
-        session_dir = get_project_session_dir(context.cwd)
+        session_dir = context.session_backend.get_session_dir(context.cwd)
         lines = [
             "Privacy settings:",
             f"- user_config_dir: {get_config_dir()}",

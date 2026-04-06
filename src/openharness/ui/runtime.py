@@ -28,7 +28,7 @@ from openharness.permissions import PermissionChecker
 from openharness.plugins import load_plugins
 from openharness.prompts import build_runtime_system_prompt
 from openharness.state import AppState, AppStateStore
-from openharness.services.session_storage import save_session_snapshot
+from openharness.services.session_backend import DEFAULT_SESSION_BACKEND, SessionBackend
 from openharness.tools import ToolRegistry, create_default_tool_registry
 from openharness.keybindings import load_keybindings
 
@@ -55,6 +55,7 @@ class RuntimeBundle:
     enforce_max_turns: bool = True
     session_id: str = ""
     settings_overrides: dict[str, Any] = field(default_factory=dict)
+    session_backend: SessionBackend = DEFAULT_SESSION_BACKEND
 
     def current_settings(self):
         """Return the effective settings for this session.
@@ -148,11 +149,13 @@ async def build_runtime(
     system_prompt: str | None = None,
     api_key: str | None = None,
     api_format: str | None = None,
+    active_profile: str | None = None,
     api_client: SupportsStreamingMessages | None = None,
     permission_prompt: PermissionPrompt | None = None,
     ask_user_prompt: AskUserPrompt | None = None,
     restore_messages: list[dict] | None = None,
     enforce_max_turns: bool = True,
+    session_backend: SessionBackend | None = None,
 ) -> RuntimeBundle:
     """Build the shared runtime for an OpenHarness session."""
     settings_overrides: dict[str, Any] = {
@@ -162,6 +165,7 @@ async def build_runtime(
         "system_prompt": system_prompt,
         "api_key": api_key,
         "api_format": api_format,
+        "active_profile": active_profile,
     }
     settings = load_settings().merge_cli_overrides(**settings_overrides)
     cwd = str(Path.cwd())
@@ -245,6 +249,7 @@ async def build_runtime(
         enforce_max_turns=enforce_max_turns or max_turns is not None,
         session_id=uuid4().hex[:12],
         settings_overrides=settings_overrides,
+        session_backend=session_backend or DEFAULT_SESSION_BACKEND,
     )
 
 
@@ -399,6 +404,7 @@ async def handle_line(
                 cwd=bundle.cwd,
                 tool_registry=bundle.tool_registry,
                 app_state=bundle.app_state,
+                session_backend=bundle.session_backend,
             ),
         )
         if result.refresh_runtime:
@@ -423,7 +429,7 @@ async def handle_line(
                 pending = _format_pending_tool_results(bundle.engine.messages)
                 if pending:
                     await print_system(pending)
-            save_session_snapshot(
+            bundle.session_backend.save_snapshot(
                 cwd=bundle.cwd,
                 model=settings.model,
                 system_prompt=system_prompt,
@@ -447,7 +453,7 @@ async def handle_line(
         pending = _format_pending_tool_results(bundle.engine.messages)
         if pending:
             await print_system(pending)
-        save_session_snapshot(
+        bundle.session_backend.save_snapshot(
             cwd=bundle.cwd,
             model=settings.model,
             system_prompt=system_prompt,
@@ -457,7 +463,7 @@ async def handle_line(
         )
         sync_app_state(bundle)
         return True
-    save_session_snapshot(
+    bundle.session_backend.save_snapshot(
         cwd=bundle.cwd,
         model=settings.model,
         system_prompt=system_prompt,

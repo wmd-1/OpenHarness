@@ -29,6 +29,7 @@ from openharness.output_styles import load_output_styles
 from openharness.tasks import get_task_manager
 from openharness.ui.protocol import BackendEvent, FrontendRequest, TranscriptItem
 from openharness.ui.runtime import build_runtime, close_runtime, handle_line, start_runtime
+from openharness.services.session_backend import SessionBackend
 
 log = logging.getLogger(__name__)
 
@@ -45,9 +46,11 @@ class BackendHostConfig:
     system_prompt: str | None = None
     api_key: str | None = None
     api_format: str | None = None
+    active_profile: str | None = None
     api_client: SupportsStreamingMessages | None = None
     restore_messages: list[dict] | None = None
     enforce_max_turns: bool = True
+    session_backend: SessionBackend | None = None
 
 
 class ReactBackendHost:
@@ -73,11 +76,13 @@ class ReactBackendHost:
             system_prompt=self._config.system_prompt,
             api_key=self._config.api_key,
             api_format=self._config.api_format,
+            active_profile=self._config.active_profile,
             api_client=self._config.api_client,
             restore_messages=self._config.restore_messages,
             permission_prompt=self._ask_permission,
             ask_user_prompt=self._ask_question,
             enforce_max_turns=self._config.enforce_max_turns,
+            session_backend=self._config.session_backend,
         )
         await start_runtime(self._bundle)
         await self._emit(
@@ -338,11 +343,10 @@ class ReactBackendHost:
         )
 
     async def _handle_list_sessions(self) -> None:
-        from openharness.services.session_storage import list_session_snapshots
         import time as _time
 
         assert self._bundle is not None
-        sessions = list_session_snapshots(self._bundle.cwd, limit=10)
+        sessions = self._bundle.session_backend.list_snapshots(self._bundle.cwd, limit=10)
         options = []
         for s in sessions:
             ts = _time.strftime("%m/%d %H:%M", _time.localtime(s["created_at"]))
@@ -688,10 +692,12 @@ async def run_backend_host(
     system_prompt: str | None = None,
     api_key: str | None = None,
     api_format: str | None = None,
+    active_profile: str | None = None,
     cwd: str | None = None,
     api_client: SupportsStreamingMessages | None = None,
     restore_messages: list[dict] | None = None,
     enforce_max_turns: bool = True,
+    session_backend: SessionBackend | None = None,
 ) -> int:
     """Run the structured React backend host."""
     if cwd:
@@ -704,9 +710,11 @@ async def run_backend_host(
             system_prompt=system_prompt,
             api_key=api_key,
             api_format=api_format,
+            active_profile=active_profile,
             api_client=api_client,
             restore_messages=restore_messages,
             enforce_max_turns=enforce_max_turns,
+            session_backend=session_backend,
         )
     )
     return await host.run()
