@@ -24,6 +24,7 @@ from ohmo.runtime import launch_ohmo_react_tui, run_ohmo_backend, run_ohmo_print
 from ohmo.session_storage import OhmoSessionBackend
 from ohmo.workspace import (
     get_gateway_config_path,
+    get_workspace_root,
     get_soul_path,
     get_state_path,
     get_user_path,
@@ -134,7 +135,7 @@ def _select_from_menu(
     return selected[0]
 
 
-def _prompt_provider_profile(cwd: str | Path) -> str:
+def _prompt_provider_profile(workspace: str | Path) -> str:
     settings = load_settings()
     statuses = AuthManager(settings).get_profile_statuses()
     options = [
@@ -148,7 +149,7 @@ def _prompt_provider_profile(cwd: str | Path) -> str:
     return _select_from_menu(
         "Choose provider profile for ohmo:",
         options,
-        default_value=load_gateway_config(cwd).provider_profile,
+        default_value=load_gateway_config(workspace).provider_profile,
     )
 
 
@@ -158,10 +159,16 @@ def _prompt_channels(existing: GatewayConfig) -> tuple[list[str], dict[str, dict
     print("Configure channels for ohmo gateway:")
     for channel in _INTERACTIVE_CHANNELS:
         current = channel in existing.enabled_channels
-        if not _confirm_prompt(f"Enable {channel}?", default=current):
-            continue
-        enabled.append(channel)
         prior = dict(existing.channel_configs.get(channel, {}))
+        if current:
+            enabled.append(channel)
+            if not _confirm_prompt(f"Reconfigure {channel}?", default=False):
+                configs[channel] = prior
+                continue
+        elif not _confirm_prompt(f"Enable {channel}?", default=False):
+            continue
+        else:
+            enabled.append(channel)
         allow_from_raw = _text_prompt(
             f"{channel} allow_from (comma separated, '*' for everyone)",
             default=",".join(prior.get("allow_from", ["*"])) or "*",
@@ -248,10 +255,10 @@ def _prompt_channels(existing: GatewayConfig) -> tuple[list[str], dict[str, dict
     return enabled, configs
 
 
-def _run_init_wizard(cwd: str | Path) -> GatewayConfig:
-    """Interactive init flow for provider/channel setup."""
-    existing = load_gateway_config(cwd)
-    provider_profile = _prompt_provider_profile(cwd)
+def _run_gateway_config_wizard(workspace: str | Path) -> GatewayConfig:
+    """Interactive flow for provider/channel setup."""
+    existing = load_gateway_config(workspace)
+    provider_profile = _prompt_provider_profile(workspace)
     enabled_channels, channel_configs = _prompt_channels(existing)
     send_progress = _confirm_prompt(
         "Send progress updates to channels?",
@@ -270,8 +277,31 @@ def _run_init_wizard(cwd: str | Path) -> GatewayConfig:
             "send_tool_hints": send_tool_hints,
         }
     )
-    save_gateway_config(config, cwd)
+    save_gateway_config(config, workspace)
     return config
+
+
+def _print_gateway_config_summary(config: GatewayConfig) -> None:
+    if config.enabled_channels:
+        print(
+            "Configured channels: "
+            + ", ".join(config.enabled_channels)
+            + f" | provider_profile={config.provider_profile}"
+        )
+    else:
+        print(f"Configured provider_profile={config.provider_profile}; no channels enabled yet.")
+
+
+def _maybe_restart_gateway(*, cwd: str | Path, workspace: str | Path) -> None:
+    state = gateway_status(cwd, workspace)
+    if not state.running:
+        return
+    if not _confirm_prompt("Gateway is running. Restart now to apply changes?", default=True):
+        print("Configuration saved. Restart later with `ohmo gateway restart`.")
+        return
+    stop_gateway_process(cwd, workspace)
+    pid = start_gateway_process(cwd, workspace)
+    print(f"ohmo gateway restarted (pid={pid})")
 
 
 @app.callback(invoke_without_command=True)
@@ -360,19 +390,36 @@ def init_cmd(
     ),
 ) -> None:
     """Initialize the .ohmo workspace."""
-    root = initialize_workspace(workspace)
+    root_path = get_workspace_root(workspace)
+    already_exists = root_path.exists()
+    root = initialize_workspace(root_path)
     print(f"Initialized ohmo workspace at {root}")
+    if already_exists:
+        print("ohmo workspace already exists.")
+        if not interactive:
+            print("Use `ohmo config` to update provider and channel settings.")
+            return
+        if not _confirm_prompt("Open configuration now?", default=True):
+            print("Use `ohmo config` when you want to change provider or channel settings.")
+            return
     if interactive:
-        config = _run_init_wizard(root)
-        if config.enabled_channels:
-            print(
-                "Configured channels: "
-                + ", ".join(config.enabled_channels)
-                + f" | provider_profile={config.provider_profile}"
-            )
-        else:
-            print(f"Configured provider_profile={config.provider_profile}; no channels enabled yet.")
+        config = _run_gateway_config_wizard(root)
+        _print_gateway_config_summary(config)
         print(f"Saved gateway config to {get_gateway_config_path(root)}")
+
+
+@app.command("config")
+def config_cmd(
+    cwd: str = typer.Option(str(Path.cwd()), "--cwd", help="Project working directory"),
+    workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)"),
+) -> None:
+    """Configure provider profile and gateway channels."""
+    cwd_path = str(Path(cwd).resolve())
+    workspace_root = initialize_workspace(workspace)
+    config = _run_gateway_config_wizard(workspace_root)
+    _print_gateway_config_summary(config)
+    print(f"Saved gateway config to {get_gateway_config_path(workspace_root)}")
+    _maybe_restart_gateway(cwd=cwd_path, workspace=workspace_root)
 
 
 @app.command("doctor")
