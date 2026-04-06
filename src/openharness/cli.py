@@ -269,6 +269,7 @@ _PROVIDER_LABELS: dict[str, str] = {
     "dashscope": "Alibaba DashScope",
     "bedrock": "AWS Bedrock",
     "vertex": "Google Vertex AI",
+    "moonshot": "Moonshot (Kimi)",
 }
 
 _AUTH_SOURCE_LABELS: dict[str, str] = {
@@ -280,6 +281,7 @@ _AUTH_SOURCE_LABELS: dict[str, str] = {
     "dashscope_api_key": "DashScope API key",
     "bedrock_api_key": "Bedrock credentials",
     "vertex_api_key": "Vertex credentials",
+    "moonshot_api_key": "Moonshot API key",
 }
 
 
@@ -721,7 +723,7 @@ def _login_provider(provider: str) -> None:
         _bind_external_provider(provider)
         return
 
-    if provider in ("anthropic", "openai", "dashscope", "bedrock", "vertex"):
+    if provider in ("anthropic", "openai", "dashscope", "bedrock", "vertex", "moonshot"):
         label = _PROVIDER_LABELS.get(provider, provider)
         flow = ApiKeyFlow(provider=provider, prompt_text=f"Enter your {label} API key")
         try:
@@ -803,7 +805,7 @@ def auth_login(
     """Interactively authenticate with a provider.
 
     Run without arguments to choose a provider from a menu.
-    Supported providers: anthropic, anthropic_claude, openai, openai_codex, copilot, dashscope, bedrock, vertex.
+    Supported providers: anthropic, anthropic_claude, openai, openai_codex, copilot, dashscope, bedrock, vertex, moonshot.
     """
     if provider is None:
         print("Select a provider to authenticate:", flush=True)
