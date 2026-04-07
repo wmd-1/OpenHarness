@@ -545,16 +545,14 @@ class Settings(BaseModel):
             )
 
         storage_provider = auth_source_provider_name(auth_source)
-        explicit_key = self.api_key
-        if explicit_key:
-            return ResolvedAuth(
-                provider=provider or storage_provider,
-                auth_kind="api_key",
-                value=explicit_key,
-                source="settings_or_env",
-                state="configured",
-            )
 
+        # Look up the provider-specific environment variable first.  The flat
+        # ``self.api_key`` field is a legacy single-slot value that usually
+        # holds an Anthropic key.  When the active profile points at a
+        # *different* provider (e.g. ``openai_api_key``), blindly returning
+        # ``self.api_key`` sends the wrong credential to the wrong backend.
+        # Checking the env var first ensures the correct key is used when the
+        # user has both ANTHROPIC_API_KEY and OPENAI_API_KEY configured.
         env_var = {
             "anthropic_api_key": "ANTHROPIC_API_KEY",
             "openai_api_key": "OPENAI_API_KEY",
@@ -570,6 +568,17 @@ class Settings(BaseModel):
                     source=f"env:{env_var}",
                     state="configured",
                 )
+
+        # Fall back to the flat api_key field (settings.json / --api-key).
+        explicit_key = self.api_key
+        if explicit_key:
+            return ResolvedAuth(
+                provider=provider or storage_provider,
+                auth_kind="api_key",
+                value=explicit_key,
+                source="settings_or_env",
+                state="configured",
+            )
 
         from openharness.auth.storage import load_credential
 
