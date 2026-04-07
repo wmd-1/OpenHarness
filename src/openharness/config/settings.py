@@ -187,6 +187,7 @@ def default_provider_profiles() -> dict[str, ProviderProfile]:
             api_format="openai",
             auth_source="moonshot_api_key",
             default_model="kimi-k2.5",
+            base_url="https://api.moonshot.cn/v1",
         ),
     }
 
@@ -415,16 +416,16 @@ class Settings(BaseModel):
     def merged_profiles(self) -> dict[str, ProviderProfile]:
         """Return the saved profiles merged over the built-in catalog."""
         merged = default_provider_profiles()
-        merged.update(
-            {
-                name: (
-                    profile.model_copy(deep=True)
-                    if isinstance(profile, ProviderProfile)
-                    else ProviderProfile.model_validate(profile)
-                )
-                for name, profile in self.profiles.items()
-            }
-        )
+        for name, raw_profile in self.profiles.items():
+            profile = (
+                raw_profile.model_copy(deep=True)
+                if isinstance(raw_profile, ProviderProfile)
+                else ProviderProfile.model_validate(raw_profile)
+            )
+            builtin = merged.get(name)
+            if builtin is not None and profile.base_url is None and builtin.base_url is not None:
+                profile = profile.model_copy(update={"base_url": builtin.base_url})
+            merged[name] = profile
         return merged
 
     def resolve_profile(self, name: str | None = None) -> tuple[str, ProviderProfile]:
