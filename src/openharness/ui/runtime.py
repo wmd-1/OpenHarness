@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -105,6 +106,19 @@ class RuntimeBundle:
 
 def _resolve_api_client_from_settings(settings) -> SupportsStreamingMessages:
     """Build the appropriate API client for the resolved settings."""
+
+    def _safe_resolve_auth():
+        try:
+            return settings.resolve_auth()
+        except (ValueError, Exception):
+            print(
+                "Error: No API key configured.\n"
+                "  Run `oh auth login` to set up authentication, or set the\n"
+                "  ANTHROPIC_API_KEY (or OPENAI_API_KEY) environment variable.",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+
     if settings.api_format == "copilot":
         from openharness.api.copilot_client import COPILOT_DEFAULT_MODEL
 
@@ -115,25 +129,25 @@ def _resolve_api_client_from_settings(settings) -> SupportsStreamingMessages:
         )
         return CopilotClient(model=copilot_model)
     if settings.provider == "openai_codex":
-        auth = settings.resolve_auth()
+        auth = _safe_resolve_auth()
         return CodexApiClient(
             auth_token=auth.value,
             base_url=settings.base_url,
         )
     if settings.provider == "anthropic_claude":
         return AnthropicApiClient(
-            auth_token=settings.resolve_auth().value,
+            auth_token=_safe_resolve_auth().value,
             base_url=settings.base_url,
             claude_oauth=True,
             auth_token_resolver=lambda: settings.resolve_auth().value,
         )
     if settings.api_format == "openai":
-        auth = settings.resolve_auth()
+        auth = _safe_resolve_auth()
         return OpenAICompatibleClient(
             api_key=auth.value,
             base_url=settings.base_url,
         )
-    auth = settings.resolve_auth()
+    auth = _safe_resolve_auth()
     return AnthropicApiClient(
         api_key=auth.value,
         base_url=settings.base_url,
