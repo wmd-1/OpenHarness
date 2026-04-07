@@ -604,15 +604,6 @@ class Settings(BaseModel):
                 )
 
         storage_provider = credential_storage_provider_name(profile_name, profile)
-        explicit_key = "" if profile.credential_slot else self.api_key
-        if explicit_key:
-            return ResolvedAuth(
-                provider=provider or storage_provider,
-                auth_kind="api_key",
-                value=explicit_key,
-                source="settings_or_env",
-                state="configured",
-            )
 
         env_var = {
             "anthropic_api_key": "ANTHROPIC_API_KEY",
@@ -630,6 +621,16 @@ class Settings(BaseModel):
                     source=f"env:{env_var}",
                     state="configured",
                 )
+
+        explicit_key = "" if profile.credential_slot else self.api_key
+        if explicit_key:
+            return ResolvedAuth(
+                provider=provider or storage_provider,
+                auth_kind="api_key",
+                value=explicit_key,
+                source="settings_or_env",
+                state="configured",
+            )
 
         stored = load_credential(storage_provider, "api_key")
         if stored:
@@ -665,7 +666,11 @@ def _apply_env_overrides(settings: Settings) -> Settings:
     if model:
         updates["model"] = model
 
-    base_url = os.environ.get("ANTHROPIC_BASE_URL") or os.environ.get("OPENHARNESS_BASE_URL")
+    base_url = (
+        os.environ.get("ANTHROPIC_BASE_URL")
+        or os.environ.get("OPENAI_BASE_URL")
+        or os.environ.get("OPENHARNESS_BASE_URL")
+    )
     if base_url:
         updates["base_url"] = base_url
 
