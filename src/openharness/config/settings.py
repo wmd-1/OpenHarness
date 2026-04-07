@@ -543,7 +543,7 @@ class Settings(BaseModel):
 
     def resolve_auth(self) -> ResolvedAuth:
         """Resolve auth for the current provider, including subscription bridges."""
-        _, profile = self.resolve_profile()
+        profile_name, profile = self.resolve_profile()
         provider = profile.provider.strip()
         auth_source = profile.auth_source.strip() or default_auth_source_for_provider(provider, profile.api_format)
         if auth_source in {"codex_subscription", "claude_subscription"}:
@@ -586,6 +586,24 @@ class Settings(BaseModel):
             )
 
         storage_provider = auth_source_provider_name(auth_source)
+
+        from openharness.auth.storage import load_credential
+
+        if profile.credential_slot:
+            scoped_storage_provider = f"profile:{profile.credential_slot}"
+            scoped = load_credential(scoped_storage_provider, "api_key", use_keyring=False)
+            if scoped is None:
+                scoped = load_credential(scoped_storage_provider, "api_key")
+            if scoped:
+                return ResolvedAuth(
+                    provider=provider or auth_source_provider_name(auth_source),
+                    auth_kind="api_key",
+                    value=scoped,
+                    source=f"file:{scoped_storage_provider}",
+                    state="configured",
+                )
+
+        storage_provider = credential_storage_provider_name(profile_name, profile)
         explicit_key = "" if profile.credential_slot else self.api_key
         if explicit_key:
             return ResolvedAuth(
@@ -595,20 +613,6 @@ class Settings(BaseModel):
                 source="settings_or_env",
                 state="configured",
             )
-
-        from openharness.auth.storage import load_credential
-
-        storage_provider = credential_storage_provider_name(self.resolve_profile()[0], profile)
-        if profile.credential_slot:
-            stored = load_credential(storage_provider, "api_key")
-            if stored:
-                return ResolvedAuth(
-                    provider=provider or auth_source_provider_name(auth_source),
-                    auth_kind="api_key",
-                    value=stored,
-                    source=f"file:{storage_provider}",
-                    state="configured",
-                )
 
         env_var = {
             "anthropic_api_key": "ANTHROPIC_API_KEY",
