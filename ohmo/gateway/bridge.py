@@ -61,7 +61,21 @@ class OhmoGatewayBridge:
 
             session_key = session_key_for_message(message)
             try:
-                reply = await self._runtime_pool.handle_message(message, session_key)
+                reply = ""
+                async for update in self._runtime_pool.stream_message(message, session_key):
+                    if update.kind == "final":
+                        reply = update.text
+                        continue
+                    if not update.text:
+                        continue
+                    await self._bus.publish_outbound(
+                        OutboundMessage(
+                            channel=message.channel,
+                            chat_id=message.chat_id,
+                            content=update.text,
+                            metadata=update.metadata,
+                        )
+                    )
             except Exception as exc:  # pragma: no cover - gateway failure path
                 logger.exception("ohmo gateway failed to process inbound message")
                 reply = _format_gateway_error(exc)
