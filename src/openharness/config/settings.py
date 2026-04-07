@@ -249,8 +249,12 @@ def resolve_model_setting(
             return _CLAUDE_ALIAS_TARGETS[normalized]
         return normalize_anthropic_model_name(configured)
 
-    if provider in {"openai", "openai_codex", "copilot"} and normalized in {"default", "best"}:
-        return "gpt-5.4"
+    if provider in {"openai", "openai_codex", "copilot"}:
+        if normalized in {"default", "best"}:
+            return "gpt-5.4"
+        # Bare version numbers like "5.4" → "gpt-5.4"
+        if normalized and normalized[0].isdigit():
+            return f"gpt-{configured}"
 
     return configured
 
@@ -457,6 +461,11 @@ class Settings(BaseModel):
         profile_name, profile = self.resolve_profile()
         next_provider = (self.provider or "").strip() or profile.provider
         next_api_format = (self.api_format or "").strip() or profile.api_format
+        # When api_format switches to "openai" but provider is still the
+        # default "anthropic", infer provider as "openai" so model resolution
+        # and other provider-dependent logic uses the correct path.
+        if next_api_format == "openai" and next_provider == "anthropic":
+            next_provider = "openai"
         next_base_url = self.base_url if self.base_url is not None else profile.base_url
         flat_model = (self.model or "").strip()
         resolved_profile_model = resolve_model_setting(
@@ -576,6 +585,31 @@ class Settings(BaseModel):
             )
 
         storage_provider = auth_source_provider_name(auth_source)
+
+        # Look up the provider-specific environment variable first.  The flat
+        # ``self.api_key`` field is a legacy single-slot value that usually
+        # holds an Anthropic key.  When the active profile points at a
+        # *different* provider (e.g. ``openai_api_key``), blindly returning
+        # ``self.api_key`` sends the wrong credential to the wrong backend.
+        # Checking the env var first ensures the correct key is used when the
+        # user has both ANTHROPIC_API_KEY and OPENAI_API_KEY configured.
+        env_var = {
+            "anthropic_api_key": "ANTHROPIC_API_KEY",
+            "openai_api_key": "OPENAI_API_KEY",
+            "dashscope_api_key": "DASHSCOPE_API_KEY",
+        }.get(auth_source)
+        if env_var:
+            env_value = os.environ.get(env_var, "")
+            if env_value:
+                return ResolvedAuth(
+                    provider=provider or storage_provider,
+                    auth_kind="api_key",
+                    value=env_value,
+                    source=f"env:{env_var}",
+                    state="configured",
+                )
+
+        # Fall back to the flat api_key field (settings.json / --api-key).
         explicit_key = "" if profile.credential_slot else self.api_key
         if explicit_key:
             return ResolvedAuth(
@@ -597,22 +631,6 @@ class Settings(BaseModel):
                     auth_kind="api_key",
                     value=stored,
                     source=f"file:{storage_provider}",
-                    state="configured",
-                )
-
-        env_var = {
-            "anthropic_api_key": "ANTHROPIC_API_KEY",
-            "openai_api_key": "OPENAI_API_KEY",
-            "dashscope_api_key": "DASHSCOPE_API_KEY",
-        }.get(auth_source)
-        if env_var:
-            env_value = os.environ.get(env_var, "")
-            if env_value:
-                return ResolvedAuth(
-                    provider=provider or storage_provider,
-                    auth_kind="api_key",
-                    value=env_value,
-                    source=f"env:{env_var}",
                     state="configured",
                 )
 
@@ -650,7 +668,11 @@ def _apply_env_overrides(settings: Settings) -> Settings:
     if model:
         updates["model"] = model
 
-    base_url = os.environ.get("ANTHROPIC_BASE_URL") or os.environ.get("OPENHARNESS_BASE_URL")
+    base_url = (
+        os.environ.get("ANTHROPIC_BASE_URL")
+        or os.environ.get("OPENAI_BASE_URL")
+        or os.environ.get("OPENHARNESS_BASE_URL")
+    )
     if base_url:
         updates["base_url"] = base_url
 
