@@ -14,6 +14,33 @@ from ohmo.gateway.runtime import OhmoSessionRuntimePool
 logger = logging.getLogger(__name__)
 
 
+def _format_gateway_error(exc: Exception) -> str:
+    """Return a short, user-facing gateway error message."""
+    message = str(exc).strip() or exc.__class__.__name__
+    lowered = message.lower()
+    if "claude oauth refresh failed" in lowered:
+        return (
+            "[ohmo gateway error] Claude subscription auth refresh failed. "
+            "Run `oh auth claude-login` again or switch the gateway profile."
+        )
+    if "claude oauth refresh token is invalid or expired" in lowered:
+        return (
+            "[ohmo gateway error] Claude subscription token is expired. "
+            "Run `claude auth login`, then `oh auth claude-login`, or switch the gateway profile."
+        )
+    if "auth source not found" in lowered or "access token" in lowered:
+        return (
+            "[ohmo gateway error] Authentication is not configured for the current "
+            "gateway profile. Run `oh setup` or `ohmo config`."
+        )
+    if "api key" in lowered or "auth" in lowered or "credential" in lowered:
+        return (
+            "[ohmo gateway error] Authentication failed for the current gateway "
+            "profile. Check `oh auth status` and `ohmo config`."
+        )
+    return f"[ohmo gateway error] {message}"
+
+
 class OhmoGatewayBridge:
     """Consume inbound messages and publish assistant replies."""
 
@@ -35,9 +62,9 @@ class OhmoGatewayBridge:
             session_key = session_key_for_message(message)
             try:
                 reply = await self._runtime_pool.handle_message(message, session_key)
-            except Exception:  # pragma: no cover - gateway failure path
+            except Exception as exc:  # pragma: no cover - gateway failure path
                 logger.exception("ohmo gateway failed to process inbound message")
-                reply = "[ohmo gateway error]"
+                reply = _format_gateway_error(exc)
             if not reply:
                 continue
             await self._bus.publish_outbound(
@@ -51,4 +78,3 @@ class OhmoGatewayBridge:
 
     def stop(self) -> None:
         self._running = False
-
