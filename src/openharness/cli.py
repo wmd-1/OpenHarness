@@ -1343,6 +1343,8 @@ def main(
                 system_prompt=session_data.get("system_prompt") or system_prompt,
                 api_key=api_key,
                 restore_messages=session_data.get("messages"),
+                permission_mode=permission_mode,
+                api_format=api_format,
             )
         )
         return
@@ -1380,5 +1382,6 @@ def main(
             system_prompt=system_prompt,
             api_key=api_key,
             api_format=api_format,
+            permission_mode=permission_mode,
         )
     )

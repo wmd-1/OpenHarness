@@ -170,6 +170,7 @@ async def build_runtime(
     restore_messages: list[dict] | None = None,
     enforce_max_turns: bool = True,
     session_backend: SessionBackend | None = None,
+    permission_mode: str | None = None,
 ) -> RuntimeBundle:
     """Build the shared runtime for an OpenHarness session."""
     settings_overrides: dict[str, Any] = {
@@ -180,6 +181,7 @@ async def build_runtime(
         "api_key": api_key,
         "api_format": api_format,
         "active_profile": active_profile,
+        "permission_mode": permission_mode,
     }
     settings = load_settings().merge_cli_overrides(**settings_overrides)
     cwd = str(Path.cwd())
