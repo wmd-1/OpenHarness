@@ -2,14 +2,32 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
+import json
 
 from openharness.channels.bus.events import InboundMessage
-from openharness.engine.stream_events import AssistantTextDelta, AssistantTurnComplete
+from openharness.engine.stream_events import (
+    AssistantTextDelta,
+    AssistantTurnComplete,
+    ErrorEvent,
+    StatusEvent,
+    ToolExecutionCompleted,
+    ToolExecutionStarted,
+)
 from openharness.ui.runtime import RuntimeBundle, build_runtime, start_runtime
 
 from ohmo.prompts import build_ohmo_system_prompt
 from ohmo.session_storage import OhmoSessionBackend
+
+
+@dataclass(frozen=True)
+class GatewayStreamUpdate:
+    """One outbound update produced while processing a channel message."""
+
+    kind: str
+    text: str
+    metadata: dict[str, object]
 
 
 class OhmoSessionRuntimePool:
@@ -45,6 +63,7 @@ class OhmoSessionRuntimePool:
             )
             return bundle
 
+        snapshot = self._session_backend.load_latest_for_session_key(session_key)
         bundle = await build_runtime(
             model=self._model,
             max_turns=self._max_turns,
@@ -52,22 +71,62 @@ class OhmoSessionRuntimePool:
             active_profile=self._provider_profile,
             session_backend=self._session_backend,
             enforce_max_turns=self._max_turns is not None,
+            restore_messages=snapshot.get("messages") if snapshot else None,
         )
+        if snapshot and snapshot.get("session_id"):
+            bundle.session_id = str(snapshot["session_id"])
         await start_runtime(bundle)
         self._bundles[session_key] = bundle
         return bundle
 
-    async def handle_message(self, message: InboundMessage, session_key: str) -> str:
-        """Submit an inbound channel message and return the assistant reply."""
+    async def stream_message(self, message: InboundMessage, session_key: str):
+        """Submit an inbound channel message and yield progress + final reply updates."""
         bundle = await self.get_bundle(session_key, latest_user_prompt=message.content)
         bundle.engine.set_system_prompt(
             build_ohmo_system_prompt(self._cwd, workspace=self._workspace, extra_prompt=None)
         )
         reply_parts: list[str] = []
+        yield GatewayStreamUpdate(
+            kind="progress",
+            text="Thinking...",
+            metadata={"_progress": True, "_session_key": session_key},
+        )
         async for event in bundle.engine.submit_message(message.content):
             if isinstance(event, AssistantTextDelta):
                 reply_parts.append(event.text)
-            elif isinstance(event, AssistantTurnComplete) and not reply_parts:
+                continue
+            if isinstance(event, StatusEvent):
+                yield GatewayStreamUpdate(
+                    kind="progress",
+                    text=event.message,
+                    metadata={"_progress": True, "_session_key": session_key},
+                )
+                continue
+            if isinstance(event, ToolExecutionStarted):
+                summary = _summarize_tool_input(event.tool_name, event.tool_input)
+                hint = f"Using {event.tool_name}"
+                if summary:
+                    hint = f"{hint}: {summary}"
+                yield GatewayStreamUpdate(
+                    kind="tool_hint",
+                    text=hint,
+                    metadata={
+                        "_progress": True,
+                        "_tool_hint": True,
+                        "_session_key": session_key,
+                    },
+                )
+                continue
+            if isinstance(event, ToolExecutionCompleted):
+                continue
+            if isinstance(event, ErrorEvent):
+                yield GatewayStreamUpdate(
+                    kind="error",
+                    text=event.message,
+                    metadata={"_session_key": session_key},
+                )
+                return
+            if isinstance(event, AssistantTurnComplete) and not reply_parts:
                 reply_parts.append(event.message.text.strip())
         reply = "".join(reply_parts).strip()
         self._session_backend.save_snapshot(
@@ -77,5 +136,26 @@ class OhmoSessionRuntimePool:
             messages=bundle.engine.messages,
             usage=bundle.engine.total_usage,
             session_id=bundle.session_id,
+            session_key=session_key,
         )
-        return reply
+        if reply:
+            yield GatewayStreamUpdate(
+                kind="final",
+                text=reply,
+                metadata={"_session_key": session_key},
+            )
+
+
+def _summarize_tool_input(tool_name: str, tool_input: dict[str, object]) -> str:
+    if not tool_input:
+        return ""
+    for key in ("url", "query", "pattern", "path", "file_path", "command"):
+        value = tool_input.get(key)
+        if isinstance(value, str) and value.strip():
+            text = value.strip()
+            return text if len(text) <= 120 else text[:120] + "..."
+    try:
+        raw = json.dumps(tool_input, ensure_ascii=False, sort_keys=True)
+    except TypeError:
+        raw = str(tool_input)
+    return raw if len(raw) <= 120 else raw[:120] + "..."
