@@ -11,8 +11,6 @@ import sys
 from dataclasses import dataclass
 from uuid import uuid4
 
-log = logging.getLogger(__name__)
-
 from openharness.api.client import SupportsStreamingMessages
 from openharness.auth.manager import AuthManager
 from openharness.config.settings import CLAUDE_MODEL_ALIAS_OPTIONS, display_model_setting
@@ -32,6 +30,8 @@ from openharness.tasks import get_task_manager
 from openharness.ui.protocol import BackendEvent, FrontendRequest, TranscriptItem
 from openharness.ui.runtime import build_runtime, close_runtime, handle_line, start_runtime
 from openharness.services.session_backend import SessionBackend
+
+log = logging.getLogger(__name__)
 
 log = logging.getLogger(__name__)
 

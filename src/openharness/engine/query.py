@@ -9,8 +9,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator, Awaitable, Callable
 
-log = logging.getLogger(__name__)
-
 from openharness.api.client import (
     ApiMessageCompleteEvent,
     ApiMessageRequest,
@@ -33,6 +31,8 @@ from openharness.hooks import HookEvent, HookExecutor
 from openharness.permissions.checker import PermissionChecker
 from openharness.tools.base import ToolExecutionContext
 from openharness.tools.base import ToolRegistry
+
+log = logging.getLogger(__name__)
 
 
 PermissionPrompt = Callable[[str, str], Awaitable[bool]]
