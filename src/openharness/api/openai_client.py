@@ -36,6 +36,21 @@ log = logging.getLogger(__name__)
 MAX_RETRIES = 3
 BASE_DELAY = 1.0
 MAX_DELAY = 30.0
+_MAX_COMPLETION_TOKEN_MODEL_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+
+
+def _token_limit_param_for_model(model: str, max_tokens: int) -> dict[str, int]:
+    """Return the correct token limit field for the target OpenAI model.
+
+    GPT-5 and the current reasoning-model families reject ``max_tokens`` and
+    require ``max_completion_tokens`` instead.
+    """
+    normalized = model.strip().lower()
+    if "/" in normalized:
+        normalized = normalized.rsplit("/", 1)[-1]
+    if normalized.startswith(_MAX_COMPLETION_TOKEN_MODEL_PREFIXES):
+        return {"max_completion_tokens": max_tokens}
+    return {"max_tokens": max_tokens}
 
 
 def _convert_tools_to_openai(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -221,10 +236,10 @@ class OpenAICompatibleClient:
         params: dict[str, Any] = {
             "model": request.model,
             "messages": openai_messages,
-            "max_tokens": request.max_tokens,
             "stream": True,
             "stream_options": {"include_usage": True},
         }
+        params.update(_token_limit_param_for_model(request.model, request.max_tokens))
         if openai_tools:
             params["tools"] = openai_tools
             # Some providers (Kimi) error on empty reasoning_content in
