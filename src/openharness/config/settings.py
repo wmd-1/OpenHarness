@@ -616,7 +616,11 @@ def _apply_env_overrides(settings: Settings) -> Settings:
     if model:
         updates["model"] = model
 
-    base_url = os.environ.get("ANTHROPIC_BASE_URL") or os.environ.get("OPENHARNESS_BASE_URL")
+    base_url = (
+        os.environ.get("ANTHROPIC_BASE_URL")
+        or os.environ.get("OPENAI_BASE_URL")
+        or os.environ.get("OPENHARNESS_BASE_URL")
+    )
     if base_url:
         updates["base_url"] = base_url
 
