@@ -181,6 +181,13 @@ def default_provider_profiles() -> dict[str, ProviderProfile]:
             auth_source="copilot_oauth",
             default_model="gpt-5.4",
         ),
+        "moonshot": ProviderProfile(
+            label="Moonshot (Kimi)",
+            provider="moonshot",
+            api_format="openai",
+            auth_source="moonshot_api_key",
+            default_model="kimi-k2.5",
+        ),
     }
 
 
@@ -266,6 +273,7 @@ def auth_source_provider_name(auth_source: str) -> str:
         "dashscope_api_key": "dashscope",
         "bedrock_api_key": "bedrock",
         "vertex_api_key": "vertex",
+        "moonshot_api_key": "moonshot",
     }
     return mapping.get(auth_source, auth_source)
 
@@ -301,6 +309,8 @@ def default_auth_source_for_provider(provider: str, api_format: str | None = Non
         return "bedrock_api_key"
     if provider == "vertex":
         return "vertex_api_key"
+    if provider == "moonshot":
+        return "moonshot_api_key"
     if provider == "openai" or api_format == "openai":
         return "openai_api_key"
     return "anthropic_api_key"
@@ -604,6 +614,7 @@ class Settings(BaseModel):
             "anthropic_api_key": "ANTHROPIC_API_KEY",
             "openai_api_key": "OPENAI_API_KEY",
             "dashscope_api_key": "DASHSCOPE_API_KEY",
+            "moonshot_api_key": "MOONSHOT_API_KEY",
         }.get(auth_source)
         if env_var:
             env_value = os.environ.get(env_var, "")
