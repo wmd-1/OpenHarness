@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 from pathlib import Path
 
@@ -340,6 +341,18 @@ def _maybe_restart_gateway(*, cwd: str | Path, workspace: str | Path) -> None:
     print(f"ohmo gateway restarted (pid={pid})")
 
 
+def _configure_gateway_logging(workspace: str | Path | None = None) -> None:
+    """Configure foreground gateway logging."""
+    config = load_gateway_config(workspace)
+    level_name = str(config.log_level or "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
+        force=True,
+    )
+
+
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
@@ -556,6 +569,7 @@ def gateway_run_cmd(
     workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)"),
 ) -> None:
     """Run the ohmo gateway in the foreground."""
+    _configure_gateway_logging(workspace)
     service = OhmoGatewayService(cwd, workspace)
     raise SystemExit(asyncio.run(service.run_foreground()))
 

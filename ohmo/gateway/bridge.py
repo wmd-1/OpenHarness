@@ -14,6 +14,14 @@ from ohmo.gateway.runtime import OhmoSessionRuntimePool
 logger = logging.getLogger(__name__)
 
 
+def _content_snippet(text: str, *, limit: int = 160) -> str:
+    """Return a single-line preview suitable for logs."""
+    normalized = " ".join(text.split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 3] + "..."
+
+
 def _format_gateway_error(exc: Exception) -> str:
     """Return a short, user-facing gateway error message."""
     message = str(exc).strip() or exc.__class__.__name__
@@ -60,6 +68,14 @@ class OhmoGatewayBridge:
                 break
 
             session_key = session_key_for_message(message)
+            logger.info(
+                "ohmo inbound received channel=%s chat_id=%s sender_id=%s session_key=%s content=%r",
+                message.channel,
+                message.chat_id,
+                message.sender_id,
+                session_key,
+                _content_snippet(message.content),
+            )
             try:
                 reply = ""
                 async for update in self._runtime_pool.stream_message(message, session_key):
@@ -68,6 +84,14 @@ class OhmoGatewayBridge:
                         continue
                     if not update.text:
                         continue
+                    logger.info(
+                        "ohmo outbound update channel=%s chat_id=%s session_key=%s kind=%s content=%r",
+                        message.channel,
+                        message.chat_id,
+                        session_key,
+                        update.kind,
+                        _content_snippet(update.text),
+                    )
                     await self._bus.publish_outbound(
                         OutboundMessage(
                             channel=message.channel,
@@ -77,10 +101,30 @@ class OhmoGatewayBridge:
                         )
                     )
             except Exception as exc:  # pragma: no cover - gateway failure path
-                logger.exception("ohmo gateway failed to process inbound message")
+                logger.exception(
+                    "ohmo gateway failed to process inbound message channel=%s chat_id=%s sender_id=%s session_key=%s content=%r",
+                    message.channel,
+                    message.chat_id,
+                    message.sender_id,
+                    session_key,
+                    _content_snippet(message.content),
+                )
                 reply = _format_gateway_error(exc)
             if not reply:
+                logger.info(
+                    "ohmo inbound finished without final reply channel=%s chat_id=%s session_key=%s",
+                    message.channel,
+                    message.chat_id,
+                    session_key,
+                )
                 continue
+            logger.info(
+                "ohmo outbound final channel=%s chat_id=%s session_key=%s content=%r",
+                message.channel,
+                message.chat_id,
+                session_key,
+                _content_snippet(reply),
+            )
             await self._bus.publish_outbound(
                 OutboundMessage(
                     channel=message.channel,

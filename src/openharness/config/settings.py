@@ -655,8 +655,11 @@ class Settings(BaseModel):
         if not updates:
             return merged
         profile_keys = {"model", "base_url", "api_format", "provider", "api_key", "active_profile", "profiles"}
-        if profile_keys.isdisjoint(updates):
+        profile_updates = profile_keys.intersection(updates)
+        if not profile_updates:
             return merged
+        if profile_updates.issubset({"active_profile"}):
+            return merged.materialize_active_profile()
         return merged.sync_active_profile_from_flat_fields().materialize_active_profile()
 
 

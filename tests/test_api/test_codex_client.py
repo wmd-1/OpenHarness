@@ -6,7 +6,12 @@ from typing import Any
 import pytest
 
 from openharness.api.client import ApiMessageRequest, ApiMessageCompleteEvent, ApiTextDeltaEvent
-from openharness.api.codex_client import CodexApiClient, _convert_messages_to_codex, _resolve_codex_url
+from openharness.api.codex_client import (
+    CodexApiClient,
+    _convert_messages_to_codex,
+    _format_codex_stream_error,
+    _resolve_codex_url,
+)
 from openharness.engine.messages import ConversationMessage, TextBlock, ToolResultBlock, ToolUseBlock
 
 
@@ -97,6 +102,19 @@ def test_convert_messages_to_codex():
 
 def test_resolve_codex_url_ignores_unrelated_base_url():
     assert _resolve_codex_url("https://api.moonshot.cn/anthropic") == "https://chatgpt.com/backend-api/codex/responses"
+
+
+def test_format_codex_stream_error_includes_code_and_request_id():
+    message = _format_codex_stream_error(
+        {
+            "type": "error",
+            "message": "Upstream overloaded",
+            "code": "overloaded",
+            "request_id": "req_123",
+        },
+        fallback="Codex error",
+    )
+    assert message == "Upstream overloaded (code=overloaded) [request_id=req_123]"
 
 
 @pytest.mark.asyncio
