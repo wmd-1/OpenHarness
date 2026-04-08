@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from contextlib import AsyncExitStack
 from typing import Any
 
@@ -76,7 +78,8 @@ class McpClientManager:
     async def close(self) -> None:
         """Close all active MCP sessions."""
         for stack in list(self._stacks.values()):
-            await stack.aclose()
+            with contextlib.suppress(RuntimeError, asyncio.CancelledError):
+                await stack.aclose()
         self._stacks.clear()
         self._sessions.clear()
 
@@ -220,7 +223,12 @@ class McpClientManager:
         session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
         await session.initialize()
         tool_result = await session.list_tools()
-        resource_result = await session.list_resources()
+        resource_result = None
+        try:
+            resource_result = await session.list_resources()
+        except Exception as exc:
+            if "Method not found" not in str(exc):
+                raise
         tools = [
             McpToolInfo(
                 server_name=name,
@@ -237,7 +245,7 @@ class McpClientManager:
                 uri=str(resource.uri),
                 description=resource.description or "",
             )
-            for resource in resource_result.resources
+            for resource in (resource_result.resources if resource_result is not None else [])
         ]
         self._sessions[name] = session
         self._stacks[name] = stack
