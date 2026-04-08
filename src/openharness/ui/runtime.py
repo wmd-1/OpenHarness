@@ -163,6 +163,7 @@ def _resolve_api_client_from_settings(settings) -> SupportsStreamingMessages:
 async def build_runtime(
     *,
     prompt: str | None = None,
+    cwd: str | None = None,
     model: str | None = None,
     max_turns: int | None = None,
     base_url: str | None = None,
@@ -192,7 +193,7 @@ async def build_runtime(
         "permission_mode": permission_mode,
     }
     settings = load_settings().merge_cli_overrides(**settings_overrides)
-    cwd = str(Path.cwd())
+    cwd = str(Path(cwd).expanduser().resolve()) if cwd else str(Path.cwd())
     normalized_skill_dirs = tuple(str(Path(path).expanduser().resolve()) for path in (extra_skill_dirs or ()))
     normalized_plugin_roots = tuple(str(Path(path).expanduser().resolve()) for path in (extra_plugin_roots or ()))
     plugins = load_plugins(settings, cwd, extra_roots=normalized_plugin_roots)

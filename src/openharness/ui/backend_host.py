@@ -85,6 +85,7 @@ class ReactBackendHost:
             api_format=self._config.api_format,
             active_profile=self._config.active_profile,
             api_client=self._config.api_client,
+            cwd=self._config.cwd,
             restore_messages=self._config.restore_messages,
             permission_prompt=self._ask_permission,
             ask_user_prompt=self._ask_question,
