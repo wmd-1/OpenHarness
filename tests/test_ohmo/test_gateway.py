@@ -173,11 +173,52 @@ async def test_runtime_pool_stream_message_emits_progress_and_tool_hint(tmp_path
     updates = [u async for u in pool.stream_message(message, "feishu:c1")]
 
     assert updates[0].kind == "progress"
-    assert updates[0].text == "Thinking..."
+    assert updates[0].text.startswith(("🤔", "🧠", "✨", "🔎", "🪄"))
     assert updates[1].kind == "tool_hint"
-    assert "Using web_fetch" in updates[1].text
+    assert updates[1].text.startswith("🛠️ ")
+    assert "web_fetch" in updates[1].text
     assert updates[-1].kind == "final"
     assert updates[-1].text == "done"
+
+
+@pytest.mark.asyncio
+async def test_runtime_pool_stream_message_uses_english_progress_for_english_input(tmp_path, monkeypatch):
+    workspace = tmp_path / ".ohmo-home"
+    initialize_workspace(workspace)
+
+    async def fake_build_runtime(**kwargs):
+        class FakeEngine:
+            messages = []
+            total_usage = UsageSnapshot()
+
+            def set_system_prompt(self, prompt):
+                return None
+
+            async def submit_message(self, content):
+                yield ToolExecutionStarted(tool_name="web_fetch", tool_input={"url": "https://example.com"})
+                yield AssistantTextDelta(text="done")
+
+        return SimpleNamespace(
+            engine=FakeEngine(),
+            session_id="sess123",
+            current_settings=lambda: SimpleNamespace(model="gpt-5.4"),
+        )
+
+    async def fake_start_runtime(bundle):
+        return None
+
+    monkeypatch.setattr("ohmo.gateway.runtime.build_runtime", fake_build_runtime)
+    monkeypatch.setattr("ohmo.gateway.runtime.start_runtime", fake_start_runtime)
+
+    pool = OhmoSessionRuntimePool(cwd=tmp_path, workspace=workspace, provider_profile="codex")
+    message = InboundMessage(channel="feishu", sender_id="u1", chat_id="c1", content="can you check this")
+    updates = [u async for u in pool.stream_message(message, "feishu:c1")]
+
+    assert updates[0].kind == "progress"
+    assert updates[0].text.startswith(("🤔", "🧠", "✨", "🔎", "🪄"))
+    assert "Thinking" in updates[0].text or "Working" in updates[0].text or "Looking" in updates[0].text or "Following" in updates[0].text or "Pulling" in updates[0].text
+    assert updates[1].kind == "tool_hint"
+    assert updates[1].text.startswith("🛠️ Using web_fetch")
 
 
 @pytest.mark.asyncio
@@ -186,8 +227,8 @@ async def test_gateway_bridge_publishes_progress_updates():
 
     class FakeRuntimePool:
         async def stream_message(self, message, session_key):
-            yield SimpleNamespace(kind="progress", text="Thinking...", metadata={"_progress": True, "_session_key": session_key})
-            yield SimpleNamespace(kind="tool_hint", text="Using web_fetch: https://example.com", metadata={"_progress": True, "_tool_hint": True, "_session_key": session_key})
+            yield SimpleNamespace(kind="progress", text="🤔 想一想…", metadata={"_progress": True, "_session_key": session_key})
+            yield SimpleNamespace(kind="tool_hint", text="🛠️ 正在使用 web_fetch: https://example.com", metadata={"_progress": True, "_tool_hint": True, "_session_key": session_key})
             yield SimpleNamespace(kind="final", text="Done", metadata={"_session_key": session_key})
 
     bridge = OhmoGatewayBridge(bus=bus, runtime_pool=FakeRuntimePool())
@@ -207,10 +248,11 @@ async def test_gateway_bridge_publishes_progress_updates():
         except asyncio.CancelledError:
             pass
 
-    assert first.content == "Thinking..."
+    assert first.content.startswith(("🤔", "🧠", "✨", "🔎", "🪄"))
     assert first.metadata["_progress"] is True
     assert second.metadata["_tool_hint"] is True
-    assert "Using web_fetch" in second.content
+    assert second.content.startswith("🛠️ ")
+    assert "web_fetch" in second.content
     assert third.content == "Done"
 
 
@@ -220,7 +262,7 @@ async def test_gateway_bridge_logs_inbound_and_final(caplog):
 
     class FakeRuntimePool:
         async def stream_message(self, message, session_key):
-            yield SimpleNamespace(kind="progress", text="Thinking...", metadata={"_progress": True, "_session_key": session_key})
+            yield SimpleNamespace(kind="progress", text="🤔 想一想…", metadata={"_progress": True, "_session_key": session_key})
             yield SimpleNamespace(kind="final", text="Done", metadata={"_session_key": session_key})
 
     bridge = OhmoGatewayBridge(bus=bus, runtime_pool=FakeRuntimePool())

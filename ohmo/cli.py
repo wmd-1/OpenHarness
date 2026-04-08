@@ -51,6 +51,7 @@ app.add_typer(user_app)
 app.add_typer(gateway_app)
 
 _INTERACTIVE_CHANNELS = ("telegram", "slack", "discord", "feishu")
+_WORKSPACE_HELP = "Path to the ohmo workspace (defaults to ~/.ohmo)"
 
 
 def _can_use_questionary() -> bool:
@@ -359,7 +360,7 @@ def main(
     print_mode: str | None = typer.Option(None, "--print", "-p", help="Run a single prompt and exit"),
     model: str | None = typer.Option(None, "--model", help="Model override for this session"),
     profile: str | None = typer.Option(None, "--profile", help="Provider profile to use"),
-    workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)"),
+    workspace: str | None = typer.Option(None, "--workspace", help=_WORKSPACE_HELP),
     max_turns: int | None = typer.Option(None, "--max-turns", help="Override max turns"),
     cwd: str = typer.Option(str(Path.cwd()), "--cwd", help="Working directory"),
     backend_only: bool = typer.Option(False, "--backend-only", hidden=True),
@@ -431,7 +432,7 @@ def main(
 @app.command("init")
 def init_cmd(
     cwd: str = typer.Option(str(Path.cwd()), "--cwd", help="Project working directory (reserved for future project overrides)"),
-    workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)"),
+    workspace: str | None = typer.Option(None, "--workspace", help=_WORKSPACE_HELP),
     interactive: bool = typer.Option(
         True,
         "--interactive/--no-interactive",
@@ -460,7 +461,7 @@ def init_cmd(
 @app.command("config")
 def config_cmd(
     cwd: str = typer.Option(str(Path.cwd()), "--cwd", help="Project working directory"),
-    workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)"),
+    workspace: str | None = typer.Option(None, "--workspace", help=_WORKSPACE_HELP),
 ) -> None:
     """Configure provider profile and gateway channels."""
     cwd_path = str(Path(cwd).resolve())
@@ -474,7 +475,7 @@ def config_cmd(
 @app.command("doctor")
 def doctor_cmd(
     cwd: str = typer.Option(str(Path.cwd()), "--cwd", help="Project working directory"),
-    workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)"),
+    workspace: str | None = typer.Option(None, "--workspace", help=_WORKSPACE_HELP),
 ) -> None:
     """Check .ohmo workspace and provider readiness."""
     cwd_path = str(Path(cwd).resolve())
@@ -498,7 +499,7 @@ def doctor_cmd(
 
 
 @memory_app.command("list")
-def memory_list_cmd(workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)")) -> None:
+def memory_list_cmd(workspace: str | None = typer.Option(None, "--workspace", help=_WORKSPACE_HELP)) -> None:
     for path in list_memory_files(workspace):
         print(path.name)
 
@@ -507,7 +508,7 @@ def memory_list_cmd(workspace: str | None = typer.Option(None, "--workspace", he
 def memory_add_cmd(
     title: str = typer.Argument(...),
     content: str = typer.Argument(...),
-    workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)"),
+    workspace: str | None = typer.Option(None, "--workspace", help=_WORKSPACE_HELP),
 ) -> None:
     path = add_memory_entry(workspace, title, content)
     print(f"Added memory entry {path.name}")
@@ -516,7 +517,7 @@ def memory_add_cmd(
 @memory_app.command("remove")
 def memory_remove_cmd(
     name: str = typer.Argument(...),
-    workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)"),
+    workspace: str | None = typer.Option(None, "--workspace", help=_WORKSPACE_HELP),
 ) -> None:
     if remove_memory_entry(workspace, name):
         print(f"Removed memory entry {name}")
@@ -538,26 +539,26 @@ def _show_or_edit(path: Path, set_text: str | None) -> None:
 
 
 @soul_app.command("show")
-def soul_show_cmd(workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)")) -> None:
+def soul_show_cmd(workspace: str | None = typer.Option(None, "--workspace", help=_WORKSPACE_HELP)) -> None:
     _show_or_edit(get_soul_path(workspace), None)
 
 
 @soul_app.command("edit")
 def soul_edit_cmd(
-    workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)"),
+    workspace: str | None = typer.Option(None, "--workspace", help=_WORKSPACE_HELP),
     set_text: str | None = typer.Option(None, "--set", help="Replace soul.md with this text"),
 ) -> None:
     _show_or_edit(get_soul_path(workspace), set_text)
 
 
 @user_app.command("show")
-def user_show_cmd(workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)")) -> None:
+def user_show_cmd(workspace: str | None = typer.Option(None, "--workspace", help=_WORKSPACE_HELP)) -> None:
     _show_or_edit(get_user_path(workspace), None)
 
 
 @user_app.command("edit")
 def user_edit_cmd(
-    workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)"),
+    workspace: str | None = typer.Option(None, "--workspace", help=_WORKSPACE_HELP),
     set_text: str | None = typer.Option(None, "--set", help="Replace user.md with this text"),
 ) -> None:
     _show_or_edit(get_user_path(workspace), set_text)
@@ -566,7 +567,7 @@ def user_edit_cmd(
 @gateway_app.command("run")
 def gateway_run_cmd(
     cwd: str = typer.Option(str(Path.cwd()), "--cwd", help="Project working directory"),
-    workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)"),
+    workspace: str | None = typer.Option(None, "--workspace", help=_WORKSPACE_HELP),
 ) -> None:
     """Run the ohmo gateway in the foreground."""
     _configure_gateway_logging(workspace)
@@ -577,7 +578,7 @@ def gateway_run_cmd(
 @gateway_app.command("start")
 def gateway_start_cmd(
     cwd: str = typer.Option(str(Path.cwd()), "--cwd", help="Project working directory"),
-    workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)"),
+    workspace: str | None = typer.Option(None, "--workspace", help=_WORKSPACE_HELP),
 ) -> None:
     pid = start_gateway_process(cwd, workspace)
     print(f"ohmo gateway started (pid={pid})")
@@ -586,7 +587,7 @@ def gateway_start_cmd(
 @gateway_app.command("stop")
 def gateway_stop_cmd(
     cwd: str = typer.Option(str(Path.cwd()), "--cwd", help="Project working directory"),
-    workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)"),
+    workspace: str | None = typer.Option(None, "--workspace", help=_WORKSPACE_HELP),
 ) -> None:
     if stop_gateway_process(cwd, workspace):
         print("ohmo gateway stopped.")
@@ -597,7 +598,7 @@ def gateway_stop_cmd(
 @gateway_app.command("restart")
 def gateway_restart_cmd(
     cwd: str = typer.Option(str(Path.cwd()), "--cwd", help="Project working directory"),
-    workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)"),
+    workspace: str | None = typer.Option(None, "--workspace", help=_WORKSPACE_HELP),
 ) -> None:
     stop_gateway_process(cwd, workspace)
     pid = start_gateway_process(cwd, workspace)
@@ -607,7 +608,7 @@ def gateway_restart_cmd(
 @gateway_app.command("status")
 def gateway_status_cmd(
     cwd: str = typer.Option(str(Path.cwd()), "--cwd", help="Project working directory"),
-    workspace: str | None = typer.Option(None, "--workspace", help="Path to the ohmo workspace (defaults to ~/.ohmo)"),
+    workspace: str | None = typer.Option(None, "--workspace", help=_WORKSPACE_HELP),
 ) -> None:
     state = gateway_status(cwd, workspace)
     print(state.model_dump_json(indent=2))

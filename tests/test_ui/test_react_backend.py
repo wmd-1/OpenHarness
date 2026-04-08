@@ -11,7 +11,7 @@ import pytest
 from openharness.api.client import ApiMessageCompleteEvent
 from openharness.api.usage import UsageSnapshot
 from openharness.engine.messages import ConversationMessage, TextBlock
-from openharness.ui.backend_host import BackendHostConfig, ReactBackendHost
+from openharness.ui.backend_host import BackendHostConfig, ReactBackendHost, run_backend_host
 from openharness.ui.protocol import BackendEvent
 from openharness.ui.runtime import build_runtime, close_runtime, start_runtime
 
@@ -52,6 +52,25 @@ class FakeBinaryStdout:
 
     def flush(self) -> None:
         return None
+
+
+@pytest.mark.asyncio
+async def test_run_backend_host_accepts_permission_mode(monkeypatch):
+    captured: dict[str, str | None] = {}
+
+    async def _fake_run(self):
+        captured["permission_mode"] = self._config.permission_mode
+        return 0
+
+    monkeypatch.setattr("openharness.ui.backend_host.ReactBackendHost.run", _fake_run)
+
+    result = await run_backend_host(
+        api_client=StaticApiClient("unused"),
+        permission_mode="full_auto",
+    )
+
+    assert result == 0
+    assert captured["permission_mode"] == "full_auto"
 
 
 @pytest.mark.asyncio

@@ -9,6 +9,7 @@ import logging
 import os
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from uuid import uuid4
 
 from openharness.api.client import SupportsStreamingMessages
@@ -52,7 +53,10 @@ class BackendHostConfig:
     api_client: SupportsStreamingMessages | None = None
     restore_messages: list[dict] | None = None
     enforce_max_turns: bool = True
+    permission_mode: str | None = None
     session_backend: SessionBackend | None = None
+    extra_skill_dirs: tuple[str, ...] = ()
+    extra_plugin_roots: tuple[str, ...] = ()
 
 
 class ReactBackendHost:
@@ -84,7 +88,10 @@ class ReactBackendHost:
             permission_prompt=self._ask_permission,
             ask_user_prompt=self._ask_question,
             enforce_max_turns=self._config.enforce_max_turns,
+            permission_mode=self._config.permission_mode,
             session_backend=self._config.session_backend,
+            extra_skill_dirs=self._config.extra_skill_dirs,
+            extra_plugin_roots=self._config.extra_plugin_roots,
         )
         await start_runtime(self._bundle)
         await self._emit(
@@ -714,7 +721,10 @@ async def run_backend_host(
     api_client: SupportsStreamingMessages | None = None,
     restore_messages: list[dict] | None = None,
     enforce_max_turns: bool = True,
+    permission_mode: str | None = None,
     session_backend: SessionBackend | None = None,
+    extra_skill_dirs: tuple[str | Path, ...] = (),
+    extra_plugin_roots: tuple[str | Path, ...] = (),
 ) -> int:
     """Run the structured React backend host."""
     if cwd:
@@ -731,7 +741,10 @@ async def run_backend_host(
             api_client=api_client,
             restore_messages=restore_messages,
             enforce_max_turns=enforce_max_turns,
+            permission_mode=permission_mode,
             session_backend=session_backend,
+            extra_skill_dirs=tuple(str(Path(path).expanduser().resolve()) for path in extra_skill_dirs),
+            extra_plugin_roots=tuple(str(Path(path).expanduser().resolve()) for path in extra_plugin_roots),
         )
     )
     return await host.run()
