@@ -25,6 +25,7 @@ The format is based on Keep a Changelog, and this project currently tracks chang
 - Memory search matches against body content in addition to metadata, with metadata weighted higher for relevance.
 - Memory search tokenizer handles Han characters for multilingual queries.
 - Fixed duplicate response in React TUI caused by double Enter key submission in the input handler.
+- Fixed concurrent permission modals overwriting each other in TUI default mode when the LLM returns multiple tool calls in one response; `_ask_permission` now serialises callers via an `asyncio.Lock` so each modal is shown and resolved before the next one is emitted.
 
 ### Changed
 

@@ -65,6 +65,7 @@ class ReactBackendHost:
         self._request_queue: asyncio.Queue[FrontendRequest] = asyncio.Queue()
         self._permission_requests: dict[str, asyncio.Future[bool]] = {}
         self._question_requests: dict[str, asyncio.Future[str]] = {}
+        self._permission_lock = asyncio.Lock()
         self._busy = False
         self._running = True
         # Track last tool input per name for rich event emission
@@ -647,27 +648,28 @@ class ReactBackendHost:
         return options
 
     async def _ask_permission(self, tool_name: str, reason: str) -> bool:
-        request_id = uuid4().hex
-        future: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
-        self._permission_requests[request_id] = future
-        await self._emit(
-            BackendEvent(
-                type="modal_request",
-                modal={
-                    "kind": "permission",
-                    "request_id": request_id,
-                    "tool_name": tool_name,
-                    "reason": reason,
-                },
+        async with self._permission_lock:
+            request_id = uuid4().hex
+            future: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+            self._permission_requests[request_id] = future
+            await self._emit(
+                BackendEvent(
+                    type="modal_request",
+                    modal={
+                        "kind": "permission",
+                        "request_id": request_id,
+                        "tool_name": tool_name,
+                        "reason": reason,
+                    },
+                )
             )
-        )
-        try:
-            return await asyncio.wait_for(future, timeout=300)
-        except asyncio.TimeoutError:
-            log.warning("Permission request %s timed out after 300s, denying", request_id)
-            return False
-        finally:
-            self._permission_requests.pop(request_id, None)
+            try:
+                return await asyncio.wait_for(future, timeout=300)
+            except asyncio.TimeoutError:
+                log.warning("Permission request %s timed out after 300s, denying", request_id)
+                return False
+            finally:
+                self._permission_requests.pop(request_id, None)
 
     async def _ask_question(self, question: str) -> str:
         request_id = uuid4().hex

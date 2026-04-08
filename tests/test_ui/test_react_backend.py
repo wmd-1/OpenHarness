@@ -406,3 +406,51 @@ async def test_backend_host_apply_provider_select_command_shows_single_segment_t
     assert should_continue is True
     user_event = next(item for item in events if item.type == "transcript_item" and item.item and item.item.role == "user")
     assert user_event.item.text == "/provider"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_ask_permission_are_serialised():
+    """Concurrent _ask_permission calls must be serialised so the frontend
+    never receives two overlapping modal_request events.
+
+    Without _permission_lock the second call emits a modal_request before the
+    first future is resolved, overwriting the frontend's modal state. The first
+    tool then silently waits 300 s and gets Permission denied.
+    """
+    host = ReactBackendHost(BackendHostConfig(api_client=StaticApiClient("unused")))
+
+    emitted_order: list[str] = []
+
+    async def _fake_emit(event: BackendEvent) -> None:
+        if event.type == "modal_request" and event.modal:
+            emitted_order.append(str(event.modal.get("request_id", "")))
+
+    host._emit = _fake_emit  # type: ignore[method-assign]
+
+    async def _ask_and_approve(tool: str) -> bool:
+        # Start the ask; a background task resolves the future once it appears.
+        async def _resolver():
+            # Busy-wait until this tool's future is registered.
+            while True:
+                await asyncio.sleep(0)
+                for rid, fut in list(host._permission_requests.items()):
+                    if not fut.done():
+                        fut.set_result(True)
+                        return
+
+        asyncio.create_task(_resolver())
+        return await host._ask_permission(tool, "reason")
+
+    # Fire two permission requests concurrently.
+    result_a, result_b = await asyncio.gather(
+        _ask_and_approve("write_file"),
+        _ask_and_approve("bash"),
+    )
+
+    assert result_a is True
+    assert result_b is True
+    # With the lock in place the two modal_request events must be emitted
+    # sequentially (one completes before the other starts), so exactly two
+    # distinct request IDs must have been emitted.
+    assert len(emitted_order) == 2
+    assert emitted_order[0] != emitted_order[1]
