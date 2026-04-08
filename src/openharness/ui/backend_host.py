@@ -53,6 +53,7 @@ class BackendHostConfig:
     restore_messages: list[dict] | None = None
     enforce_max_turns: bool = True
     session_backend: SessionBackend | None = None
+    permission_mode: str | None = None
 
 
 class ReactBackendHost:
@@ -85,6 +86,7 @@ class ReactBackendHost:
             ask_user_prompt=self._ask_question,
             enforce_max_turns=self._config.enforce_max_turns,
             session_backend=self._config.session_backend,
+            permission_mode=self._config.permission_mode,
         )
         await start_runtime(self._bundle)
         await self._emit(
@@ -715,6 +717,7 @@ async def run_backend_host(
     restore_messages: list[dict] | None = None,
     enforce_max_turns: bool = True,
     session_backend: SessionBackend | None = None,
+    permission_mode: str | None = None,
 ) -> int:
     """Run the structured React backend host."""
     if cwd:
@@ -732,6 +735,7 @@ async def run_backend_host(
             restore_messages=restore_messages,
             enforce_max_turns=enforce_max_turns,
             session_backend=session_backend,
+            permission_mode=permission_mode,
         )
     )
     return await host.run()
