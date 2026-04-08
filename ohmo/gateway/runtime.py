@@ -5,10 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import logging
+import mimetypes
 from pathlib import Path
 import json
+import os
+import string
 
 from openharness.channels.bus.events import InboundMessage
+from openharness.engine.messages import ConversationMessage, ImageBlock, TextBlock
 from openharness.engine.stream_events import (
     AssistantTextDelta,
     AssistantTurnComplete,
@@ -41,6 +45,10 @@ _CHANNEL_THINKING_PHRASES_EN = (
     "🔎 Looking into it…",
     "🪄 Following the thread…",
 )
+
+_TEXT_PREVIEW_BYTES = 4096
+_TEXT_PREVIEW_CHARS = 900
+_BINARY_HEAD_BYTES = 32
 
 
 @dataclass(frozen=True)
@@ -122,16 +130,18 @@ class OhmoSessionRuntimePool:
 
     async def stream_message(self, message: InboundMessage, session_key: str):
         """Submit an inbound channel message and yield progress + final reply updates."""
-        bundle = await self.get_bundle(session_key, latest_user_prompt=message.content)
+        user_message = _build_inbound_user_message(message)
+        user_prompt = user_message.text
+        bundle = await self.get_bundle(session_key, latest_user_prompt=user_prompt)
         logger.info(
             "ohmo runtime processing start channel=%s chat_id=%s session_key=%s session_id=%s content=%r",
             message.channel,
             message.chat_id,
             session_key,
             bundle.session_id,
-            _content_snippet(message.content),
+            _content_snippet(user_prompt),
         )
-        bundle.engine.set_system_prompt(self._runtime_system_prompt(bundle, message.content))
+        bundle.engine.set_system_prompt(self._runtime_system_prompt(bundle, user_prompt))
         reply_parts: list[str] = []
         yield GatewayStreamUpdate(
             kind="progress",
@@ -140,11 +150,11 @@ class OhmoSessionRuntimePool:
                 kind="thinking",
                 text="Thinking...",
                 session_key=session_key,
-                content=message.content,
+                content=user_prompt,
             ),
             metadata={"_progress": True, "_session_key": session_key},
         )
-        async for event in bundle.engine.submit_message(message.content):
+        async for event in bundle.engine.submit_message(user_message):
             if isinstance(event, AssistantTextDelta):
                 reply_parts.append(event.text)
                 continue
@@ -162,7 +172,7 @@ class OhmoSessionRuntimePool:
                         kind="status",
                         text=event.message,
                         session_key=session_key,
-                        content=message.content,
+                        content=user_prompt,
                     ),
                     metadata={"_progress": True, "_session_key": session_key},
                 )
@@ -186,7 +196,7 @@ class OhmoSessionRuntimePool:
                         kind="tool_hint",
                         text=hint,
                         session_key=session_key,
-                        content=message.content,
+                        content=user_prompt,
                     ),
                     metadata={
                         "_progress": True,
@@ -222,7 +232,7 @@ class OhmoSessionRuntimePool:
         self._session_backend.save_snapshot(
             cwd=self._cwd,
             model=bundle.current_settings().model,
-            system_prompt=self._runtime_system_prompt(bundle, message.content),
+            system_prompt=self._runtime_system_prompt(bundle, user_prompt),
             messages=bundle.engine.messages,
             usage=bundle.engine.total_usage,
             session_id=bundle.session_id,
@@ -322,6 +332,117 @@ def _format_channel_progress(
             return text
         return f"🫧 {text}"
     return text
+
+
+def _build_inbound_user_message(message: InboundMessage) -> ConversationMessage:
+    """Convert an inbound channel message into user content blocks."""
+    content: list[TextBlock | ImageBlock] = []
+    base = (message.content or "").strip()
+    if base:
+        content.append(TextBlock(text=base))
+
+    attachment_notes = _build_attachment_notes(message.media)
+    if attachment_notes:
+        prefix = "\n\n" if base else ""
+        content.append(TextBlock(text=prefix + attachment_notes))
+
+    for media_path in message.media:
+        if not _is_image_attachment(media_path):
+            continue
+        try:
+            content.append(ImageBlock.from_path(media_path))
+        except Exception:
+            logger.exception("ohmo runtime failed to encode image attachment path=%s", media_path)
+
+    return ConversationMessage.from_user_content(content)
+
+
+def _build_attachment_notes(media_paths: list[str]) -> str:
+    """Build textual attachment notes for non-image context and persistence."""
+    if not media_paths:
+        return ""
+    lines = [
+        "[Channel attachments]",
+        "The following attachments were downloaded locally for this message.",
+        "Inspect them by path if needed.",
+    ]
+    for media_path in media_paths:
+        lines.append(f"- {_describe_media_path(media_path)}")
+        summary = _summarize_attachment(media_path)
+        if summary:
+            for part in summary.splitlines():
+                lines.append(f"  {part}")
+    return "\n".join(lines).strip()
+
+
+def _describe_media_path(media_path: str) -> str:
+    """Return a short type + path description for an inbound attachment."""
+    suffix = Path(media_path).suffix.lower()
+    if _is_image_attachment(media_path):
+        kind = "image"
+    elif suffix in {".mp3", ".wav", ".m4a", ".opus", ".aac"}:
+        kind = "audio"
+    elif suffix in {".mp4", ".mov", ".avi", ".mkv", ".webm"}:
+        kind = "video"
+    else:
+        kind = "file"
+    filename = os.path.basename(media_path)
+    return f"{kind}: {filename} (path: {media_path})"
+
+
+def _is_image_attachment(media_path: str) -> bool:
+    mime, _ = mimetypes.guess_type(media_path)
+    return bool(mime and mime.startswith("image/"))
+
+
+def _summarize_attachment(media_path: str) -> str:
+    """Return a compact summary/header for a downloaded attachment."""
+    path = Path(media_path)
+    if not path.exists() or not path.is_file():
+        return "summary: attachment is unavailable on disk"
+    try:
+        stat = path.stat()
+    except OSError:
+        return "summary: attachment metadata is unavailable"
+
+    mime, _ = mimetypes.guess_type(str(path))
+    summary_lines = [f"summary: size={stat.st_size} bytes mime={mime or 'unknown'}"]
+    try:
+        head = path.read_bytes()[:_TEXT_PREVIEW_BYTES]
+    except OSError:
+        return "\n".join(summary_lines)
+
+    if _is_image_attachment(str(path)):
+        return "\n".join(summary_lines)
+
+    text_preview = _decode_text_preview(head)
+    if text_preview is not None:
+        summary_lines.append(f"text preview: {text_preview}")
+        return "\n".join(summary_lines)
+
+    head_hex = head[:_BINARY_HEAD_BYTES].hex(" ")
+    if head_hex:
+        summary_lines.append(f"binary header: {head_hex}")
+    return "\n".join(summary_lines)
+
+
+def _decode_text_preview(data: bytes) -> str | None:
+    """Return a compact text preview when a file looks text-like."""
+    if not data:
+        return ""
+    try:
+        decoded = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    printable = sum(1 for char in decoded if char in string.printable or char.isprintable() or char in "\n\r\t")
+    if printable / max(len(decoded), 1) < 0.9:
+        return None
+    normalized = " ".join(decoded.split())
+    if not normalized:
+        return ""
+    if len(normalized) > _TEXT_PREVIEW_CHARS:
+        return normalized[: _TEXT_PREVIEW_CHARS - 3] + "..."
+    return normalized
 
 
 def _prefers_chinese_progress(content: str) -> bool:

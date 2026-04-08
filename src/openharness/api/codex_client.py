@@ -18,7 +18,7 @@ from openharness.api.client import (
 )
 from openharness.api.errors import AuthenticationFailure, OpenHarnessApiError, RateLimitFailure, RequestFailure
 from openharness.api.usage import UsageSnapshot
-from openharness.engine.messages import ConversationMessage, TextBlock, ToolResultBlock, ToolUseBlock
+from openharness.engine.messages import ConversationMessage, ImageBlock, TextBlock, ToolResultBlock, ToolUseBlock
 
 DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api"
 JWT_CLAIM_PATH = "https://api.openai.com/auth"
@@ -78,12 +78,17 @@ def _convert_messages_to_codex(messages: list[ConversationMessage]) -> list[dict
     result: list[dict[str, Any]] = []
     for msg in messages:
         if msg.role == "user":
-            text = "".join(block.text for block in msg.content if isinstance(block, TextBlock))
-            if text.strip():
-                result.append({
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": text}],
-                })
+            user_content: list[dict[str, Any]] = []
+            for block in msg.content:
+                if isinstance(block, TextBlock) and block.text.strip():
+                    user_content.append({"type": "input_text", "text": block.text})
+                elif isinstance(block, ImageBlock):
+                    user_content.append({
+                        "type": "input_image",
+                        "image_url": f"data:{block.media_type};base64,{block.data}",
+                    })
+            if user_content:
+                result.append({"role": "user", "content": user_content})
             for block in msg.content:
                 if isinstance(block, ToolResultBlock):
                     result.append({

@@ -9,7 +9,7 @@ import pytest
 from openharness.api.usage import UsageSnapshot
 from openharness.channels.bus.events import InboundMessage
 from openharness.channels.bus.queue import MessageBus
-from openharness.engine.messages import ConversationMessage
+from openharness.engine.messages import ConversationMessage, ImageBlock, TextBlock
 from openharness.engine.stream_events import AssistantTextDelta, ToolExecutionStarted
 
 from ohmo.gateway.bridge import OhmoGatewayBridge, _format_gateway_error
@@ -219,6 +219,67 @@ async def test_runtime_pool_stream_message_uses_english_progress_for_english_inp
     assert "Thinking" in updates[0].text or "Working" in updates[0].text or "Looking" in updates[0].text or "Following" in updates[0].text or "Pulling" in updates[0].text
     assert updates[1].kind == "tool_hint"
     assert updates[1].text.startswith("🛠️ Using web_fetch")
+
+
+@pytest.mark.asyncio
+async def test_runtime_pool_includes_media_paths_in_prompt(tmp_path, monkeypatch):
+    workspace = tmp_path / ".ohmo-home"
+    initialize_workspace(workspace)
+    image_path = tmp_path / "example.png"
+    image_path.write_bytes(
+        b"\x89PNG\r\n\x1a\n"
+        b"\x00\x00\x00\rIHDR"
+        b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00"
+        b"\x90wS\xde\x00\x00\x00\nIDATx\x9cc`\x00\x00\x00\x02\x00\x01"
+        b"\xe2!\xbc3\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    report_path = tmp_path / "report.txt"
+    report_path.write_text("Quarterly summary\nRevenue up 12%\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    async def fake_build_runtime(**kwargs):
+        class FakeEngine:
+            messages = []
+            total_usage = UsageSnapshot()
+
+            def set_system_prompt(self, prompt):
+                return None
+
+            async def submit_message(self, content):
+                captured["content"] = content
+                yield AssistantTextDelta(text="done")
+
+        return SimpleNamespace(
+            engine=FakeEngine(),
+            session_id="sess123",
+            current_settings=lambda: SimpleNamespace(model="gpt-5.4"),
+        )
+
+    async def fake_start_runtime(bundle):
+        return None
+
+    monkeypatch.setattr("ohmo.gateway.runtime.build_runtime", fake_build_runtime)
+    monkeypatch.setattr("ohmo.gateway.runtime.start_runtime", fake_start_runtime)
+
+    pool = OhmoSessionRuntimePool(cwd=tmp_path, workspace=workspace, provider_profile="codex")
+    message = InboundMessage(
+        channel="feishu",
+        sender_id="u1",
+        chat_id="c1",
+        content="请看这个图片",
+        media=[str(image_path), str(report_path)],
+    )
+    updates = [u async for u in pool.stream_message(message, "feishu:c1")]
+
+    assert updates[-1].text == "done"
+    submitted = captured["content"]
+    assert isinstance(submitted, ConversationMessage)
+    assert any(isinstance(block, ImageBlock) for block in submitted.content)
+    text = "".join(block.text for block in submitted.content if isinstance(block, TextBlock))
+    assert "[Channel attachments]" in text
+    assert f"image: example.png (path: {image_path})" in text
+    assert f"file: report.txt (path: {report_path})" in text
+    assert "text preview: Quarterly summary Revenue up 12%" in text
 
 
 @pytest.mark.asyncio

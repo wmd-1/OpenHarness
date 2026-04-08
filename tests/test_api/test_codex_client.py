@@ -12,7 +12,7 @@ from openharness.api.codex_client import (
     _format_codex_stream_error,
     _resolve_codex_url,
 )
-from openharness.engine.messages import ConversationMessage, TextBlock, ToolResultBlock, ToolUseBlock
+from openharness.engine.messages import ConversationMessage, ImageBlock, TextBlock, ToolResultBlock, ToolUseBlock
 
 
 class _FakeStreamResponse:
@@ -98,6 +98,28 @@ def test_convert_messages_to_codex():
         "call_id": "call_123",
         "output": "hello",
     }
+
+
+def test_convert_multimodal_user_message_to_codex():
+    messages = [
+        ConversationMessage(
+            role="user",
+            content=[
+                TextBlock(text="What is in this image?"),
+                ImageBlock(media_type="image/png", data="YWJj", source_path="/tmp/example.png"),
+            ],
+        )
+    ]
+
+    converted = _convert_messages_to_codex(messages)
+
+    assert converted == [{
+        "role": "user",
+        "content": [
+            {"type": "input_text", "text": "What is in this image?"},
+            {"type": "input_image", "image_url": "data:image/png;base64,YWJj"},
+        ],
+    }]
 
 
 def test_resolve_codex_url_ignores_unrelated_base_url():
