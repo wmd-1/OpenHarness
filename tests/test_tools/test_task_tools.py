@@ -163,7 +163,7 @@ async def test_send_message_swarm_path_uses_subprocess_backend(
         "openharness.swarm.subprocess_backend.SubprocessBackend.send_message",
         new_callable=AsyncMock,
     ) as mock_send:
-        result = await SendMessageTool().execute(
+        await SendMessageTool().execute(
             __import__(
                 "openharness.tools.send_message_tool",
                 fromlist=["SendMessageToolInput"],
