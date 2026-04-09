@@ -6,6 +6,14 @@ import stringWidth from 'string-width';
 import {useTheme} from '../theme/ThemeContext.js';
 import type {ThemeConfig} from '../theme/builtinThemes.js';
 
+function getInlineFallbackText(token: Token): string {
+	if ('text' in token && typeof token.text === 'string') {
+		return token.text;
+	}
+
+	return token.raw;
+}
+
 function getInlineDisplayText(tokens: Token[] | undefined): string {
 	if (!tokens || tokens.length === 0) {
 		return '';
@@ -32,10 +40,7 @@ function getInlineDisplayText(tokens: Token[] | undefined): string {
 			case 'escape':
 				return (token as Tokens.Escape).text;
 			default:
-				if ('text' in token && typeof token.text === 'string') {
-					return token.text;
-				}
-				return token.raw;
+				return getInlineFallbackText(token);
 		}
 	}).join('');
 }
@@ -110,9 +115,19 @@ function renderInline(tokens: Token[] | undefined, theme: ThemeConfig): React.Re
 				return <Text key={i}>{es.text}</Text>;
 			}
 			default:
-				return <Text key={i}>{token.raw}</Text>;
+				return <Text key={i}>{getInlineFallbackText(token)}</Text>;
 		}
 	});
+}
+
+function renderBlocks(tokens: Token[] | undefined, theme: ThemeConfig): React.ReactNode {
+	if (!tokens || tokens.length === 0) {
+		return null;
+	}
+
+	return tokens.map((token, i) => (
+		<MarkdownBlock key={i} token={token} theme={theme} />
+	));
 }
 
 // ---------------------------------------------------------------------------
@@ -181,12 +196,8 @@ function MarkdownBlock({
 					{bq.tokens.map((t, i) => (
 						<Box key={i} flexDirection="row">
 							<Text color={theme.colors.muted}>{'│ '}</Text>
-							<Box flexGrow={1}>
-								<Text dimColor>
-									{t.type === 'paragraph'
-										? renderInline((t as Tokens.Paragraph).tokens, theme)
-										: (t as Token).raw}
-								</Text>
+							<Box flexDirection="column" flexGrow={1}>
+								{renderBlocks([t], theme)}
 							</Box>
 						</Box>
 					))}
@@ -293,14 +304,12 @@ function MarkdownBlock({
 // ---------------------------------------------------------------------------
 // Public component
 // ---------------------------------------------------------------------------
-export function MarkdownText({content}: {content: string}): React.JSX.Element {
+export const MarkdownText = React.memo(function MarkdownText({content}: {content: string}): React.JSX.Element {
 	const {theme} = useTheme();
-	const tokens = lexer(content);
+	const tokens = React.useMemo(() => lexer(content), [content]);
 	return (
 		<Box flexDirection="column">
-			{tokens.map((token, i) => (
-				<MarkdownBlock key={i} token={token} theme={theme} />
-			))}
+			{renderBlocks(tokens, theme)}
 		</Box>
 	);
-}
+});
