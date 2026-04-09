@@ -24,7 +24,7 @@ from openharness.engine.stream_events import (
     ToolExecutionStarted,
 )
 from openharness.prompts import build_runtime_system_prompt
-from openharness.ui.runtime import RuntimeBundle, build_runtime, close_runtime, start_runtime
+from openharness.ui.runtime import RuntimeBundle, _last_user_text, build_runtime, close_runtime, start_runtime
 
 from ohmo.prompts import build_ohmo_system_prompt
 from ohmo.session_storage import OhmoSessionBackend

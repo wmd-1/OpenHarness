@@ -1,9 +1,4 @@
 import asyncio
-from pathlib import Path
-
-import pytest
-
-from openharness.tools.bash_tool import BashTool, BashToolInput
 
 
 class _FakeProcess:
@@ -26,4 +21,3 @@ class _FakeProcess:
 
     async def wait(self):
         return self.returncode
-
