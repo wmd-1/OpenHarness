@@ -3,6 +3,7 @@ import {Box, Text} from 'ink';
 
 import {useTheme} from '../theme/ThemeContext.js';
 import type {TranscriptItem} from '../types.js';
+import {MarkdownText} from './MarkdownText.js';
 import {ToolCallDisplay} from './ToolCallDisplay.js';
 import {WelcomeBanner} from './WelcomeBanner.js';
 
@@ -54,8 +55,10 @@ function MessageRow({item, theme}: {item: TranscriptItem; theme: ReturnType<type
 				<Box marginTop={1} marginBottom={0} flexDirection="column">
 					<Text>
 						<Text color={theme.colors.success} bold>{theme.icons.assistant}</Text>
-						<Text>{item.text}</Text>
 					</Text>
+					<Box marginLeft={2} flexDirection="column">
+						<MarkdownText content={item.text} />
+					</Box>
 				</Box>
 			);
 
