@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import time
 
 import httpx
@@ -23,7 +24,7 @@ async def test_web_fetch_tool_reads_html(tmp_path, monkeypatch):
             request=request,
         )
 
-    monkeypatch.setattr("openharness.tools.web_fetch_tool.fetch_public_http_response", fake_fetch)
+    monkeypatch.setattr(sys.modules[WebFetchTool.__module__], "fetch_public_http_response", fake_fetch)
 
     tool = WebFetchTool()
     result = await tool.execute(
@@ -55,7 +56,7 @@ async def test_web_search_tool_reads_results(tmp_path, monkeypatch):
             request=request,
         )
 
-    monkeypatch.setattr("openharness.tools.web_search_tool.fetch_public_http_response", fake_fetch)
+    monkeypatch.setattr(sys.modules[WebSearchTool.__module__], "fetch_public_http_response", fake_fetch)
 
     tool = WebSearchTool()
     result = await tool.execute(
