@@ -58,6 +58,9 @@ def build_runtime_system_prompt(
     else:
         sections = [build_system_prompt(custom_prompt=settings.system_prompt, cwd=str(cwd))]
 
+    if not is_coordinator_mode() and settings.system_prompt is None:
+        sections[0] = build_system_prompt(cwd=str(cwd))
+
     if settings.fast_mode:
         sections.append(
             "# Session Mode\nFast mode is enabled. Prefer concise replies, minimal tool use, and quicker progress over exhaustive exploration."

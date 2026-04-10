@@ -1,4 +1,10 @@
-<h1 align="center"><img src="assets/logo.png" alt="OpenHarness" width="64" style="vertical-align: middle;">&nbsp; <code>oh</code> — OpenHarness: Open Agent Harness</h1>
+<h1 align="center">
+  <img src="assets/logo.png" alt="OpenHarness" width="64" style="vertical-align: middle;">
+  &nbsp;&nbsp;
+  <img src="assets/ohmo.png" alt="ohmo" width="64" style="vertical-align: middle;">
+  <br>
+  <code>oh</code> — OpenHarness &amp; <code>ohmo</code>
+</h1>
 
 <p align="center">
   <a href="README.md"><strong>English</strong></a> ·
@@ -6,6 +12,8 @@
 </p>
 
 **OpenHarness** delivers core lightweight agent infrastructure: tool-use, skills, memory, and multi-agent coordination.
+
+**ohmo** is a personal AI agent built on OpenHarness — not another chatbot, but an assistant that actually works for you over long sessions. Chat with ohmo in Feishu / Slack / Telegram / Discord, and it forks branches, writes code, runs tests, and opens PRs on its own. ohmo runs on your existing Claude Code or Codex subscription — no extra API key needed.
 
 **Join the community**: contribute **Harness** for open agent development.
 
@@ -34,10 +42,6 @@ Supports CLI agent integration including OpenClaw, nanobot, Cursor, and more.
 
 <p align="center">
   <img src="assets/cli-typing.gif" alt="OpenHarness Terminal Demo" width="800">
-</p>
-
-<p align="center">
-  <img src="assets/architecture-comic.png" alt="How Agent Harness Works" width="800">
 </p>
 
 ---
@@ -149,6 +153,22 @@ OpenHarness is an open-source Python implementation designed for **researchers, 
 
 ## 📰 What's New
 
+- **2026-04-10** 🧠 **v0.1.6** — Auto-Compaction & Markdown TUI:
+  - Auto-Compaction preserves task state and channel logs across context compression — agents can run multi-day sessions without manual compact/clear
+  - Subprocess teammates run in headless worker mode; agent team creation stabilized
+  - Assistant messages now render full Markdown in the React TUI
+  - `ohmo` gains channel slash commands and multimodal attachment support
+- **2026-04-08** 🔌 **v0.1.5** — MCP HTTP transport & Swarm polling:
+  - MCP protocol adds HTTP transport, auto-reconnect on disconnect, and tool-only server compatibility
+  - JSON Schema types inferred for MCP tool inputs — no manual type mapping needed
+  - `ohmo` channels support file attachments and multimodal gateway messages
+  - Subprocess agents are now pollable in real runs; permission modals serialized to prevent input swallowing
+- **2026-04-08** 🌙 **v0.1.4** — Multi-provider auth & Moonshot/Kimi:
+  - Native Moonshot/Kimi provider with `reasoning_content` support for thinking models
+  - Auth overhaul: fixed provider-switching key mismatch, `OPENAI_BASE_URL` env override, profile-scoped credential priority
+  - MCP gracefully handles disconnected servers in `call_tool` / `read_resource`
+  - Security: built-in sensitive-path protection in PermissionChecker, hardened `web_fetch` URL validation
+  - Stability: EIO crash recovery in Ink TUI, `--debug` logging, Windows cmd flash fix
 - **2026-04-06** 🚀 **v0.1.2** — Unified setup flows and `ohmo` personal-agent app:
   - `oh setup` now guides provider selection as workflows instead of exposing raw auth/provider internals
   - Compatible API setup is now profile-scoped, so Anthropic/OpenAI-compatible endpoints can keep separate keys

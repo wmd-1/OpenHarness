@@ -506,8 +506,16 @@ async def run_query(
         if final_message is None:
             raise RuntimeError("Model stream finished without a final message")
 
+        coordinator_context_message: ConversationMessage | None = None
+        if context.system_prompt.startswith("You are a **coordinator**."):
+            if messages and messages[-1].role == "user" and messages[-1].text.startswith("# Coordinator User Context"):
+                coordinator_context_message = messages.pop()
+
         messages.append(final_message)
         yield AssistantTurnComplete(message=final_message, usage=usage), usage
+
+        if coordinator_context_message is not None:
+            messages.append(coordinator_context_message)
 
         if not final_message.tool_uses:
             return
