@@ -38,6 +38,7 @@ def test_load_claude_md_prompt(tmp_path: Path):
 
 def test_build_runtime_system_prompt_combines_sections(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("OPENHARNESS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.delenv("CLAUDE_CODE_COORDINATOR_MODE", raising=False)
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "CLAUDE.md").write_text("repo rules", encoding="utf-8")

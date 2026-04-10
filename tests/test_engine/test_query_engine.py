@@ -124,6 +124,7 @@ class CoordinatorLoopApiClient:
                                 "description": "inspect coordinator wiring",
                                 "prompt": "check whether coordinator mode is active",
                                 "subagent_type": "worker",
+                                "mode": "in_process_teammate",
                             },
                         ),
                     ],
@@ -140,7 +141,8 @@ class CoordinatorLoopApiClient:
 
 
 @pytest.mark.asyncio
-async def test_query_engine_plain_text_reply(tmp_path: Path):
+async def test_query_engine_plain_text_reply(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("CLAUDE_CODE_COORDINATOR_MODE", raising=False)
     engine = QueryEngine(
         api_client=FakeApiClient(
             [
@@ -171,7 +173,8 @@ async def test_query_engine_plain_text_reply(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_query_engine_executes_tool_calls(tmp_path: Path):
+async def test_query_engine_executes_tool_calls(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("CLAUDE_CODE_COORDINATOR_MODE", raising=False)
     sample = tmp_path / "hello.txt"
     sample.write_text("alpha\nbeta\n", encoding="utf-8")
 
@@ -240,9 +243,11 @@ async def test_query_engine_coordinator_mode_uses_coordinator_prompt_and_runs_ag
     assert len(api_client.requests) == 2
     assert "You are a **coordinator**." in api_client.requests[0].system_prompt
     assert "Coordinator User Context" not in api_client.requests[0].system_prompt
-    assert api_client.requests[0].messages[-1].role == "user"
-    assert "Coordinator User Context" in api_client.requests[0].messages[-1].text
-    assert "Workers spawned via the agent tool have access to these tools" in api_client.requests[0].messages[-1].text
+    coordinator_context_messages = [
+        msg for msg in api_client.requests[0].messages if msg.role == "user" and "Coordinator User Context" in msg.text
+    ]
+    assert len(coordinator_context_messages) == 1
+    assert "Workers spawned via the agent tool have access to these tools" in coordinator_context_messages[0].text
     assert any(isinstance(event, ToolExecutionStarted) and event.tool_name == "agent" for event in events)
     agent_results = [event for event in events if isinstance(event, ToolExecutionCompleted) and event.tool_name == "agent"]
     assert len(agent_results) == 1

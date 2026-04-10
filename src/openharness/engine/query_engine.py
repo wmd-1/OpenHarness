@@ -10,7 +10,7 @@ from openharness.engine.cost_tracker import CostTracker
 from openharness.coordinator.coordinator_mode import get_coordinator_user_context
 from openharness.engine.messages import ConversationMessage, TextBlock, ToolResultBlock
 from openharness.engine.query import AskUserPrompt, PermissionPrompt, QueryContext, remember_user_goal, run_query
-from openharness.engine.stream_events import StreamEvent
+from openharness.engine.stream_events import AssistantTurnComplete, StreamEvent
 from openharness.hooks import HookExecutor
 from openharness.permissions.checker import PermissionChecker
 from openharness.tools.base import ToolRegistry
@@ -169,6 +169,8 @@ class QueryEngine:
         if coordinator_context is not None:
             query_messages.append(coordinator_context)
         async for event, usage in run_query(context, query_messages):
+            if isinstance(event, AssistantTurnComplete):
+                self._messages = list(query_messages)
             if usage is not None:
                 self._cost_tracker.add(usage)
             yield event
@@ -189,11 +191,7 @@ class QueryEngine:
             hook_executor=self._hook_executor,
             tool_metadata=self._tool_metadata,
         )
-        query_messages = list(self._messages)
-        coordinator_context = self._build_coordinator_context_message()
-        if coordinator_context is not None:
-            query_messages.append(coordinator_context)
-        async for event, usage in run_query(context, query_messages):
+        async for event, usage in run_query(context, self._messages):
             if usage is not None:
                 self._cost_tracker.add(usage)
             yield event
