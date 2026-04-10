@@ -239,7 +239,10 @@ async def test_query_engine_coordinator_mode_uses_coordinator_prompt_and_runs_ag
 
     assert len(api_client.requests) == 2
     assert "You are a **coordinator**." in api_client.requests[0].system_prompt
-    assert "Coordinator User Context" in api_client.requests[0].system_prompt
+    assert "Coordinator User Context" not in api_client.requests[0].system_prompt
+    assert api_client.requests[0].messages[-1].role == "user"
+    assert "Coordinator User Context" in api_client.requests[0].messages[-1].text
+    assert "Workers spawned via the agent tool have access to these tools" in api_client.requests[0].messages[-1].text
     assert any(isinstance(event, ToolExecutionStarted) and event.tool_name == "agent" for event in events)
     agent_results = [event for event in events if isinstance(event, ToolExecutionCompleted) and event.tool_name == "agent"]
     assert len(agent_results) == 1
@@ -446,9 +449,17 @@ async def test_query_engine_tracks_recent_read_files_and_skills(tmp_path: Path):
     assert isinstance(read_state, list) and read_state
     assert read_state[-1]["path"] == str(sample.resolve())
     assert "alpha" in read_state[-1]["preview"]
+    task_focus = engine.tool_metadata.get("task_focus_state")
+    assert isinstance(task_focus, dict)
+    assert "track context" in task_focus.get("goal", "")
+    assert str(sample.resolve()) in task_focus.get("active_artifacts", [])
     invoked_skills = engine._tool_metadata.get("invoked_skills")
     assert isinstance(invoked_skills, list)
     assert invoked_skills[-1] == "demo-skill"
+    verified = engine.tool_metadata.get("recent_verified_work")
+    assert isinstance(verified, list)
+    assert any("Inspected file" in entry for entry in verified)
+    assert any("Loaded skill demo-skill" in entry for entry in verified)
 
 
 @pytest.mark.asyncio

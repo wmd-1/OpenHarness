@@ -1349,6 +1349,7 @@ def main(
                 system_prompt=session_data.get("system_prompt") or system_prompt,
                 api_key=api_key,
                 restore_messages=session_data.get("messages"),
+                restore_tool_metadata=session_data.get("tool_metadata"),
                 permission_mode=permission_mode,
                 api_format=api_format,
             )

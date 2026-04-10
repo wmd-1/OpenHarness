@@ -171,16 +171,31 @@ async def test_compact_conversation_runs_hooks_and_preserves_carryover_state(tmp
         carryover_metadata={
             "permission_mode": "plan",
             "session_id": "sess123",
+            "task_focus_state": {
+                "goal": "Confirm issue #98 and fix the logger formatting bug",
+                "recent_goals": [
+                    "Look into issue #98",
+                    "Confirm issue #98 and fix the logger formatting bug",
+                ],
+                "active_artifacts": [str(image_path), "src/openharness/channels/impl/matrix.py:398"],
+                "verified_state": ["Issue #98 is about logger placeholder formatting"],
+                "next_step": "Patch the logger formatting and rerun focused tests",
+            },
             "read_file_state": [
                 {
                     "path": str(image_path),
                     "span": "lines 1-20",
                     "preview": "1\tPNG header",
+                    "timestamp": 123.0,
                 }
             ],
             "invoked_skills": ["pikastream-video-meeting"],
             "async_agent_state": ["Spawned async agent [task_id=task_123]"],
             "recent_work_log": ["Ran pytest -q tests/test_compact.py [41 passed]"],
+            "recent_verified_work": [
+                "Issue #98 is about logger placeholder formatting",
+                "matrix.py still contains mixed {} / %s logging",
+            ],
             "compact_last": {"checkpoint": "query_auto_triggered", "token_count": 12345},
         },
     )
@@ -190,6 +205,11 @@ async def test_compact_conversation_runs_hooks_and_preserves_carryover_state(tmp
     joined = "\n\n".join(message.text for message in rebuilt)
     assert rebuilt[0].text.startswith("[Compact boundary marker]")
     assert any(message.text.startswith("This session is being continued") for message in rebuilt)
+    assert "[Compact attachment: task_focus]" in joined
+    assert "Current working focus" in joined
+    assert "logger formatting bug" in joined
+    assert "[Compact attachment: recent_verified_work]" in joined
+    assert "Issue #98 is about logger placeholder formatting" in joined
     assert "[Compact attachment: plan]" in joined
     assert "Plan mode is still active" in joined
     assert str(image_path) in joined
@@ -219,8 +239,16 @@ async def test_compact_post_messages_keep_boundary_summary_recent_then_attachmen
         model="claude-test",
         preserve_recent=2,
         carryover_metadata={
+            "task_focus_state": {
+                "goal": "Stabilize compact carry-over",
+                "recent_goals": ["Stabilize compact carry-over"],
+                "active_artifacts": ["/tmp/demo.py"],
+                "verified_state": ["Focused compact test fixture prepared"],
+                "next_step": "Run the focused compact tests",
+            },
             "read_file_state": [{"path": "/tmp/demo.py", "span": "lines 1-20", "preview": "print('hi')"}],
             "recent_work_log": ["Ran pytest -q tests/test_services/test_compact.py [ok]"],
+            "recent_verified_work": ["Focused compact test fixture prepared"],
         },
     )
 
@@ -231,6 +259,7 @@ async def test_compact_post_messages_keep_boundary_summary_recent_then_attachmen
     assert rebuilt[2].text == "sixth"
     assert rebuilt[3].text == "seventh"
     assert rebuilt[4].text.startswith("[Compact attachment:")
+    assert any("[Compact attachment: task_focus]" in message.text for message in rebuilt)
 
 
 @pytest.mark.asyncio

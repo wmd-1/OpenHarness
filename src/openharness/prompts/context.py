@@ -7,11 +7,7 @@ from typing import Iterable
 
 from openharness.config.paths import get_project_issue_file, get_project_pr_comments_file
 from openharness.config.settings import Settings
-from openharness.coordinator.coordinator_mode import (
-    get_coordinator_system_prompt,
-    get_coordinator_user_context,
-    is_coordinator_mode,
-)
+from openharness.coordinator.coordinator_mode import get_coordinator_system_prompt, is_coordinator_mode
 from openharness.memory import find_relevant_memories, load_memory_prompt
 from openharness.prompts.claudemd import load_claude_md_prompt
 from openharness.prompts.system_prompt import build_system_prompt
@@ -82,11 +78,6 @@ def build_runtime_system_prompt(
     )
     if skills_section and not is_coordinator_mode():
         sections.append(skills_section)
-
-    coordinator_context = get_coordinator_user_context()
-    worker_tools_context = coordinator_context.get("workerToolsContext")
-    if worker_tools_context:
-        sections.append(f"# Coordinator User Context\n\n{worker_tools_context}")
 
     claude_md = load_claude_md_prompt(cwd)
     if claude_md:

@@ -78,8 +78,8 @@ def test_build_runtime_system_prompt_uses_coordinator_prompt_when_enabled(tmp_pa
     prompt = build_runtime_system_prompt(Settings(), cwd=repo, latest_user_prompt="investigate")
 
     assert "You are a **coordinator**." in prompt
-    assert "Coordinator User Context" in prompt
-    assert "Workers spawned via the agent tool have access to these tools" in prompt
+    assert "Coordinator User Context" not in prompt
+    assert "Workers spawned via the agent tool have access to these tools" not in prompt
     assert "Environment" not in prompt
 
 

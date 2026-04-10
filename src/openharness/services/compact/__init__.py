@@ -426,12 +426,22 @@ def create_recent_files_attachment_if_needed(
         return None
     lines = ["Recently read files that may still matter:"]
     entries: list[dict[str, Any]] = []
-    for entry in read_file_state[-4:]:
+    normalized_entries = [
+        entry
+        for entry in read_file_state
+        if isinstance(entry, dict) and str(entry.get("path") or "").strip()
+    ]
+    normalized_entries.sort(
+        key=lambda entry: float(entry.get("timestamp") or 0.0),
+        reverse=True,
+    )
+    for entry in normalized_entries[:4]:
         if not isinstance(entry, dict):
             continue
         path = str(entry.get("path") or "").strip()
         span = str(entry.get("span") or "").strip()
         preview = str(entry.get("preview") or "").strip()
+        timestamp = entry.get("timestamp")
         if not path:
             continue
         bullet = f"- {path}"
@@ -440,8 +450,77 @@ def create_recent_files_attachment_if_needed(
         lines.append(bullet)
         if preview:
             lines.append(f"  Preview: {preview}")
-        entries.append({"path": path, "span": span, "preview": preview})
+        entries.append({"path": path, "span": span, "preview": preview, "timestamp": timestamp})
     return _create_attachment("recent_files", "Recently read files", lines, metadata={"entries": entries})
+
+
+def create_task_focus_attachment_if_needed(
+    metadata: dict[str, Any],
+) -> CompactAttachment | None:
+    state = metadata.get("task_focus_state")
+    if not isinstance(state, dict):
+        return None
+    goal = str(state.get("goal") or "").strip()
+    recent_goals = [
+        str(item).strip()
+        for item in state.get("recent_goals", [])
+        if str(item).strip()
+    ]
+    active_artifacts = [
+        str(item).strip()
+        for item in state.get("active_artifacts", [])
+        if str(item).strip()
+    ]
+    verified_state = [
+        str(item).strip()
+        for item in state.get("verified_state", [])
+        if str(item).strip()
+    ]
+    next_step = str(state.get("next_step") or "").strip()
+    if not any((goal, recent_goals, active_artifacts, verified_state, next_step)):
+        return None
+    lines = ["Current working focus to preserve across compaction:"]
+    if goal:
+        lines.append(f"- Goal: {goal}")
+    if recent_goals:
+        lines.append("- Recent user goals that still matter:")
+        lines.extend(f"  - {item}" for item in recent_goals[-3:])
+    if active_artifacts:
+        lines.append("- Active artifacts in play:")
+        lines.extend(f"  - {item}" for item in active_artifacts[-5:])
+    if verified_state:
+        lines.append("- Verified state already established:")
+        lines.extend(f"  - {item}" for item in verified_state[-4:])
+    if next_step:
+        lines.append(f"- Suggested next step: {next_step}")
+    return _create_attachment(
+        "task_focus",
+        "Current working focus",
+        lines,
+        metadata={
+            "goal": goal,
+            "recent_goals": recent_goals[-3:],
+            "active_artifacts": active_artifacts[-5:],
+            "verified_state": verified_state[-4:],
+            "next_step": next_step,
+        },
+    )
+
+
+def create_recent_verified_work_attachment_if_needed(
+    verified_work: Any,
+) -> CompactAttachment | None:
+    if not isinstance(verified_work, list) or not verified_work:
+        return None
+    entries = [str(entry).strip() for entry in verified_work[-8:] if str(entry).strip()]
+    if not entries:
+        return None
+    return _create_attachment(
+        "recent_verified_work",
+        "Recently verified work",
+        ["These steps or conclusions were explicitly verified before compaction:"] + [f"- {entry}" for entry in entries],
+        metadata={"entries": entries},
+    )
 
 
 def create_plan_attachment_if_needed(metadata: dict[str, Any]) -> CompactAttachment | None:
@@ -532,6 +611,8 @@ def _build_compact_attachments(
     attachments: list[CompactAttachment] = []
     attachment_paths = _extract_attachment_paths(messages)
     builders = [
+        create_task_focus_attachment_if_needed(metadata),
+        create_recent_verified_work_attachment_if_needed(metadata.get("recent_verified_work")),
         _create_recent_attachments_attachment_if_needed(attachment_paths),
         create_recent_files_attachment_if_needed(metadata.get("read_file_state")),
         create_plan_attachment_if_needed(metadata),

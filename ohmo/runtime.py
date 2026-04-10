@@ -33,6 +33,7 @@ async def run_ohmo_backend(
     provider_profile: str | None = None,
     api_client: SupportsStreamingMessages | None = None,
     restore_messages: list[dict] | None = None,
+    restore_tool_metadata: dict[str, object] | None = None,
     backend_only: bool = True,
 ) -> int:
     """Run the shared React backend host with ohmo workspace semantics."""
@@ -48,6 +49,7 @@ async def run_ohmo_backend(
         active_profile=provider_profile,
         api_client=api_client,
         restore_messages=restore_messages,
+        restore_tool_metadata=restore_tool_metadata,
         enforce_max_turns=max_turns is not None,
         session_backend=OhmoSessionBackend(workspace_root),
         extra_skill_dirs=extra_skill_dirs,

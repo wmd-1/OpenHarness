@@ -175,6 +175,7 @@ async def build_runtime(
     permission_prompt: PermissionPrompt | None = None,
     ask_user_prompt: AskUserPrompt | None = None,
     restore_messages: list[dict] | None = None,
+    restore_tool_metadata: dict[str, object] | None = None,
     enforce_max_turns: bool = True,
     session_backend: SessionBackend | None = None,
     permission_mode: str | None = None,
@@ -251,6 +252,26 @@ async def build_runtime(
 
     session_id = uuid4().hex[:12]
 
+    restored_metadata = {
+        "permission_mode": settings.permission.mode.value,
+        "read_file_state": [],
+        "invoked_skills": [],
+        "async_agent_state": [],
+        "recent_work_log": [],
+        "recent_verified_work": [],
+        "task_focus_state": {
+            "goal": "",
+            "recent_goals": [],
+            "active_artifacts": [],
+            "verified_state": [],
+            "next_step": "",
+        },
+        "compact_checkpoints": [],
+    }
+    if isinstance(restore_tool_metadata, dict):
+        for key, value in restore_tool_metadata.items():
+            restored_metadata[key] = value
+
     engine = QueryEngine(
         api_client=resolved_api_client,
         tool_registry=tool_registry,
@@ -268,13 +289,8 @@ async def build_runtime(
             "bridge_manager": bridge_manager,
             "extra_skill_dirs": normalized_skill_dirs,
             "extra_plugin_roots": normalized_plugin_roots,
-            "permission_mode": settings.permission.mode.value,
             "session_id": session_id,
-            "read_file_state": [],
-            "invoked_skills": [],
-            "async_agent_state": [],
-            "recent_work_log": [],
-            "compact_checkpoints": [],
+            **restored_metadata,
         },
     )
     # Restore messages from a saved session if provided
@@ -502,6 +518,7 @@ async def handle_line(
                 messages=bundle.engine.messages,
                 usage=bundle.engine.total_usage,
                 session_id=bundle.session_id,
+                tool_metadata=bundle.engine.tool_metadata,
             )
         if result.continue_pending:
             settings = bundle.current_settings()
@@ -531,6 +548,7 @@ async def handle_line(
                 messages=bundle.engine.messages,
                 usage=bundle.engine.total_usage,
                 session_id=bundle.session_id,
+                tool_metadata=bundle.engine.tool_metadata,
             )
         sync_app_state(bundle)
         return not result.should_exit
@@ -561,6 +579,7 @@ async def handle_line(
             messages=bundle.engine.messages,
             usage=bundle.engine.total_usage,
             session_id=bundle.session_id,
+            tool_metadata=bundle.engine.tool_metadata,
         )
         sync_app_state(bundle)
         return True
@@ -571,6 +590,7 @@ async def handle_line(
         messages=bundle.engine.messages,
         usage=bundle.engine.total_usage,
         session_id=bundle.session_id,
+        tool_metadata=bundle.engine.tool_metadata,
     )
     sync_app_state(bundle)
     return True

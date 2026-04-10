@@ -54,6 +54,7 @@ class BackendHostConfig:
     api_client: SupportsStreamingMessages | None = None
     cwd: str | None = None
     restore_messages: list[dict] | None = None
+    restore_tool_metadata: dict[str, object] | None = None
     enforce_max_turns: bool = True
     permission_mode: str | None = None
     session_backend: SessionBackend | None = None
@@ -89,6 +90,7 @@ class ReactBackendHost:
             api_client=self._config.api_client,
             cwd=self._config.cwd,
             restore_messages=self._config.restore_messages,
+            restore_tool_metadata=self._config.restore_tool_metadata,
             permission_prompt=self._ask_permission,
             ask_user_prompt=self._ask_question,
             enforce_max_turns=self._config.enforce_max_turns,
@@ -738,6 +740,7 @@ async def run_backend_host(
     cwd: str | None = None,
     api_client: SupportsStreamingMessages | None = None,
     restore_messages: list[dict] | None = None,
+    restore_tool_metadata: dict[str, object] | None = None,
     enforce_max_turns: bool = True,
     permission_mode: str | None = None,
     session_backend: SessionBackend | None = None,
@@ -759,6 +762,7 @@ async def run_backend_host(
             api_client=api_client,
             cwd=cwd,
             restore_messages=restore_messages,
+            restore_tool_metadata=restore_tool_metadata,
             enforce_max_turns=enforce_max_turns,
             permission_mode=permission_mode,
             session_backend=session_backend,

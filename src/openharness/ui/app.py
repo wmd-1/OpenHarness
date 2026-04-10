@@ -47,6 +47,7 @@ async def run_repl(
     api_client: SupportsStreamingMessages | None = None,
     backend_only: bool = False,
     restore_messages: list[dict] | None = None,
+    restore_tool_metadata: dict[str, object] | None = None,
     permission_mode: str | None = None,
 ) -> None:
     """Run the default OpenHarness interactive application (React TUI)."""
@@ -61,6 +62,7 @@ async def run_repl(
             api_format=api_format,
             api_client=api_client,
             restore_messages=restore_messages,
+            restore_tool_metadata=restore_tool_metadata,
             enforce_max_turns=max_turns is not None,
             permission_mode=permission_mode,
         )
