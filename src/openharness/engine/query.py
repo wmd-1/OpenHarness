@@ -7,7 +7,7 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import AsyncIterator, Awaitable, Callable
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 from openharness.api.client import (
     ApiMessageCompleteEvent,
@@ -21,6 +21,7 @@ from openharness.engine.messages import ConversationMessage, ToolResultBlock
 from openharness.engine.stream_events import (
     AssistantTextDelta,
     AssistantTurnComplete,
+    CompactProgressEvent,
     ErrorEvent,
     StatusEvent,
     StreamEvent,
@@ -33,12 +34,33 @@ from openharness.tools.base import ToolExecutionContext
 from openharness.tools.base import ToolRegistry
 
 AUTO_COMPACT_STATUS_MESSAGE = "Auto-compacting conversation memory to keep things fast and focused."
+REACTIVE_COMPACT_STATUS_MESSAGE = "Prompt too long; compacting conversation memory and retrying."
 
 log = logging.getLogger(__name__)
 
 
 PermissionPrompt = Callable[[str, str], Awaitable[bool]]
 AskUserPrompt = Callable[[str], Awaitable[str]]
+
+MAX_TRACKED_READ_FILES = 6
+MAX_TRACKED_SKILLS = 8
+MAX_TRACKED_ASYNC_AGENT_EVENTS = 8
+
+
+def _is_prompt_too_long_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(
+        needle in text
+        for needle in (
+            "prompt too long",
+            "context length",
+            "maximum context",
+            "context window",
+            "too many tokens",
+            "too large for the model",
+            "maximum context length",
+        )
+    )
 
 
 class MaxTurnsExceeded(RuntimeError):
@@ -67,6 +89,125 @@ class QueryContext:
     tool_metadata: dict[str, object] | None = None
 
 
+def _tool_metadata_bucket(
+    tool_metadata: dict[str, object] | None,
+    key: str,
+) -> list[Any]:
+    if tool_metadata is None:
+        return []
+    value = tool_metadata.setdefault(key, [])
+    if isinstance(value, list):
+        return value
+    replacement: list[Any] = []
+    tool_metadata[key] = replacement
+    return replacement
+
+
+def _remember_read_file(
+    tool_metadata: dict[str, object] | None,
+    *,
+    path: str,
+    offset: int,
+    limit: int,
+    output: str,
+) -> None:
+    bucket = _tool_metadata_bucket(tool_metadata, "read_file_state")
+    preview_lines = [line.strip() for line in output.splitlines()[:6] if line.strip()]
+    bucket.append(
+        {
+            "path": path,
+            "span": f"lines {offset + 1}-{offset + limit}",
+            "preview": " | ".join(preview_lines)[:320],
+        }
+    )
+    if len(bucket) > MAX_TRACKED_READ_FILES:
+        del bucket[:-MAX_TRACKED_READ_FILES]
+
+
+def _remember_skill_invocation(
+    tool_metadata: dict[str, object] | None,
+    *,
+    skill_name: str,
+) -> None:
+    bucket = _tool_metadata_bucket(tool_metadata, "invoked_skills")
+    normalized = skill_name.strip()
+    if not normalized:
+        return
+    if normalized in bucket:
+        bucket.remove(normalized)
+    bucket.append(normalized)
+    if len(bucket) > MAX_TRACKED_SKILLS:
+        del bucket[:-MAX_TRACKED_SKILLS]
+
+
+def _remember_async_agent_activity(
+    tool_metadata: dict[str, object] | None,
+    *,
+    tool_name: str,
+    tool_input: dict[str, object],
+    output: str,
+) -> None:
+    bucket = _tool_metadata_bucket(tool_metadata, "async_agent_state")
+    if tool_name == "agent":
+        description = str(tool_input.get("description") or tool_input.get("prompt") or "").strip()
+        summary = f"Spawned async agent. {description}".strip()
+        if output.strip():
+            summary = f"{summary} [{output.strip()[:180]}]".strip()
+    elif tool_name == "send_message":
+        target = str(tool_input.get("task_id") or "").strip()
+        summary = f"Sent follow-up message to async agent {target}".strip()
+    else:
+        summary = output.strip()[:220] or f"Async agent activity via {tool_name}"
+    bucket.append(summary)
+    if len(bucket) > MAX_TRACKED_ASYNC_AGENT_EVENTS:
+        del bucket[:-MAX_TRACKED_ASYNC_AGENT_EVENTS]
+
+
+def _update_plan_mode(tool_metadata: dict[str, object] | None, mode: str) -> None:
+    if tool_metadata is None:
+        return
+    tool_metadata["permission_mode"] = mode
+
+
+def _record_tool_carryover(
+    context: QueryContext,
+    *,
+    tool_name: str,
+    tool_input: dict[str, object],
+    tool_output: str,
+    is_error: bool,
+    resolved_file_path: str | None,
+) -> None:
+    if is_error:
+        return
+    if tool_name == "read_file" and resolved_file_path is not None:
+        offset = int(tool_input.get("offset") or 0)
+        limit = int(tool_input.get("limit") or 200)
+        _remember_read_file(
+            context.tool_metadata,
+            path=resolved_file_path,
+            offset=offset,
+            limit=limit,
+            output=tool_output,
+        )
+    elif tool_name == "skill":
+        _remember_skill_invocation(
+            context.tool_metadata,
+            skill_name=str(tool_input.get("name") or ""),
+        )
+    elif tool_name in {"agent", "send_message"}:
+        _remember_async_agent_activity(
+            context.tool_metadata,
+            tool_name=tool_name,
+            tool_input=tool_input,
+            output=tool_output,
+        )
+    elif tool_name == "enter_plan_mode":
+        _update_plan_mode(context.tool_metadata, "plan")
+    elif tool_name == "exit_plan_mode":
+        _update_plan_mode(context.tool_metadata, "default")
+
+
 async def run_query(
     context: QueryContext,
     messages: list[ConversationMessage],
@@ -85,20 +226,54 @@ async def run_query(
     )
 
     compact_state = AutoCompactState()
+    reactive_compact_attempted = False
+    last_compaction_result: tuple[list[ConversationMessage], bool] = (messages, False)
+
+    async def _stream_compaction(
+        *,
+        trigger: str,
+        force: bool = False,
+    ) -> AsyncIterator[tuple[StreamEvent, UsageSnapshot | None]]:
+        nonlocal last_compaction_result
+        progress_queue: asyncio.Queue[CompactProgressEvent] = asyncio.Queue()
+
+        async def _progress(event: CompactProgressEvent) -> None:
+            await progress_queue.put(event)
+
+        task = asyncio.create_task(
+            auto_compact_if_needed(
+                messages,
+                api_client=context.api_client,
+                model=context.model,
+                system_prompt=context.system_prompt,
+                state=compact_state,
+                progress_callback=_progress,
+                force=force,
+                trigger=trigger,
+                hook_executor=context.hook_executor,
+                carryover_metadata=context.tool_metadata,
+            )
+        )
+        while True:
+            try:
+                event = await asyncio.wait_for(progress_queue.get(), timeout=0.05)
+                yield event, None
+            except asyncio.TimeoutError:
+                if task.done():
+                    break
+                continue
+        while not progress_queue.empty():
+            yield progress_queue.get_nowait(), None
+        last_compaction_result = await task
+        return
 
     turn_count = 0
     while context.max_turns is None or turn_count < context.max_turns:
         turn_count += 1
         # --- auto-compact check before calling the model ---------------
-        messages, was_compacted = await auto_compact_if_needed(
-            messages,
-            api_client=context.api_client,
-            model=context.model,
-            system_prompt=context.system_prompt,
-            state=compact_state,
-        )
-        if was_compacted:
-            yield StatusEvent(message=AUTO_COMPACT_STATUS_MESSAGE), None
+        async for event, usage in _stream_compaction(trigger="auto"):
+            yield event, usage
+        messages, was_compacted = last_compaction_result
         # ---------------------------------------------------------------
 
         final_message: ConversationMessage | None = None
@@ -131,6 +306,14 @@ async def run_query(
                     usage = event.usage
         except Exception as exc:
             error_msg = str(exc)
+            if not reactive_compact_attempted and _is_prompt_too_long_error(exc):
+                reactive_compact_attempted = True
+                yield StatusEvent(message=REACTIVE_COMPACT_STATUS_MESSAGE), None
+                async for event, usage in _stream_compaction(trigger="reactive", force=True):
+                    yield event, usage
+                messages, was_compacted = last_compaction_result
+                if was_compacted:
+                    continue
             if "connect" in error_msg.lower() or "timeout" in error_msg.lower() or "network" in error_msg.lower():
                 yield ErrorEvent(message=f"Network error: {error_msg}. Check your internet connection and try again."), None
             else:
@@ -274,6 +457,14 @@ async def _execute_tool_call(
         tool_use_id=tool_use_id,
         content=result.output,
         is_error=result.is_error,
+    )
+    _record_tool_carryover(
+        context,
+        tool_name=tool_name,
+        tool_input=tool_input,
+        tool_output=tool_result.content,
+        is_error=tool_result.is_error,
+        resolved_file_path=_file_path,
     )
     if context.hook_executor is not None:
         await context.hook_executor.execute(

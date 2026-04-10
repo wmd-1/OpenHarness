@@ -247,6 +247,10 @@ async def build_runtime(
         extra_skill_dirs=normalized_skill_dirs,
         extra_plugin_roots=normalized_plugin_roots,
     )
+    from uuid import uuid4
+
+    session_id = uuid4().hex[:12]
+
     engine = QueryEngine(
         api_client=resolved_api_client,
         tool_registry=tool_registry,
@@ -264,6 +268,12 @@ async def build_runtime(
             "bridge_manager": bridge_manager,
             "extra_skill_dirs": normalized_skill_dirs,
             "extra_plugin_roots": normalized_plugin_roots,
+            "permission_mode": settings.permission.mode.value,
+            "session_id": session_id,
+            "read_file_state": [],
+            "invoked_skills": [],
+            "async_agent_state": [],
+            "compact_checkpoints": [],
         },
     )
     # Restore messages from a saved session if provided
@@ -272,8 +282,6 @@ async def build_runtime(
             ConversationMessage.model_validate(m) for m in restore_messages
         ]
         engine.load_messages(restored)
-
-    from uuid import uuid4
 
     return RuntimeBundle(
         api_client=resolved_api_client,
@@ -293,7 +301,7 @@ async def build_runtime(
         ),
         external_api_client=api_client is not None,
         enforce_max_turns=enforce_max_turns or max_turns is not None,
-        session_id=uuid4().hex[:12],
+        session_id=session_id,
         settings_overrides=settings_overrides,
         session_backend=session_backend or DEFAULT_SESSION_BACKEND,
         extra_skill_dirs=normalized_skill_dirs,

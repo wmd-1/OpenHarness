@@ -78,6 +78,7 @@ async def run_print_mode(
     from openharness.engine.stream_events import (
         AssistantTextDelta,
         AssistantTurnComplete,
+        CompactProgressEvent,
         ErrorEvent,
         StatusEvent,
         ToolExecutionCompleted,
@@ -153,6 +154,19 @@ async def run_print_mode(
                     print(event.message, file=sys.stderr)
                 elif output_format == "stream-json":
                     obj = {"type": "error", "message": event.message, "recoverable": event.recoverable}
+                    print(json.dumps(obj), flush=True)
+                    events_list.append(obj)
+            elif isinstance(event, CompactProgressEvent):
+                if output_format == "text" and event.message:
+                    print(event.message, file=sys.stderr)
+                elif output_format == "stream-json":
+                    obj = {
+                        "type": "compact_progress",
+                        "phase": event.phase,
+                        "trigger": event.trigger,
+                        "attempt": event.attempt,
+                        "message": event.message,
+                    }
                     print(json.dumps(obj), flush=True)
                     events_list.append(obj)
             elif isinstance(event, StatusEvent):

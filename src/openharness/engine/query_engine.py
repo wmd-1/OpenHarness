@@ -60,6 +60,21 @@ class QueryEngine:
         return self._max_turns
 
     @property
+    def api_client(self) -> SupportsStreamingMessages:
+        """Return the active API client."""
+        return self._api_client
+
+    @property
+    def model(self) -> str:
+        """Return the active model identifier."""
+        return self._model
+
+    @property
+    def system_prompt(self) -> str:
+        """Return the active system prompt."""
+        return self._system_prompt
+
+    @property
     def total_usage(self):
         """Return the total usage across all turns."""
         return self._cost_tracker.total

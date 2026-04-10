@@ -20,6 +20,7 @@ from openharness.themes import list_themes
 from openharness.engine.stream_events import (
     AssistantTextDelta,
     AssistantTurnComplete,
+    CompactProgressEvent,
     ErrorEvent,
     StatusEvent,
     StreamEvent,
@@ -202,6 +203,19 @@ class ReactBackendHost:
         async def _render_event(event: StreamEvent) -> None:
             if isinstance(event, AssistantTextDelta):
                 await self._emit(BackendEvent(type="assistant_delta", message=event.text))
+                return
+            if isinstance(event, CompactProgressEvent):
+                await self._emit(
+                    BackendEvent(
+                        type="compact_progress",
+                        compact_phase=event.phase,
+                        compact_trigger=event.trigger,
+                        attempt=event.attempt,
+                        compact_checkpoint=event.checkpoint,
+                        compact_metadata=event.metadata,
+                        message=event.message,
+                    )
+                )
                 return
             if isinstance(event, AssistantTurnComplete):
                 await self._emit(

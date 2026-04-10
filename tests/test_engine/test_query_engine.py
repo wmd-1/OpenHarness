@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from openharness.api.client import ApiMessageCompleteEvent, ApiRetryEvent, ApiTextDeltaEvent
+from openharness.api.errors import RequestFailure
 from openharness.api.usage import UsageSnapshot
 from openharness.config.settings import PermissionSettings
 from openharness.engine.messages import ConversationMessage, TextBlock, ToolUseBlock
@@ -15,12 +16,14 @@ from openharness.engine.query_engine import QueryEngine
 from openharness.engine.stream_events import (
     AssistantTextDelta,
     AssistantTurnComplete,
+    CompactProgressEvent,
     StatusEvent,
     ToolExecutionCompleted,
     ToolExecutionStarted,
 )
 from openharness.permissions import PermissionChecker, PermissionMode
 from openharness.tools import create_default_tool_registry
+from openharness.tools.base import ToolResult
 from openharness.hooks import HookExecutionContext, HookExecutor, HookEvent
 from openharness.hooks.loader import HookRegistry
 from openharness.hooks.schemas import PromptHookDefinition
@@ -72,6 +75,28 @@ class RetryThenSuccessApiClient:
         yield ApiRetryEvent(message="rate limited", attempt=1, max_attempts=4, delay_seconds=1.5)
         yield ApiMessageCompleteEvent(
             message=ConversationMessage(role="assistant", content=[TextBlock(text="after retry")]),
+            usage=UsageSnapshot(input_tokens=1, output_tokens=1),
+            stop_reason=None,
+        )
+
+
+class PromptTooLongThenSuccessApiClient:
+    def __init__(self) -> None:
+        self._calls = 0
+
+    async def stream_message(self, request):
+        self._calls += 1
+        if self._calls == 1:
+            raise RequestFailure("prompt too long")
+        if self._calls == 2:
+            yield ApiMessageCompleteEvent(
+                message=ConversationMessage(role="assistant", content=[TextBlock(text="<summary>compressed</summary>")]),
+                usage=UsageSnapshot(input_tokens=1, output_tokens=1),
+                stop_reason=None,
+            )
+            return
+        yield ApiMessageCompleteEvent(
+            message=ConversationMessage(role="assistant", content=[TextBlock(text="after reactive compact")]),
             usage=UsageSnapshot(input_tokens=1, output_tokens=1),
             stop_reason=None,
         )
@@ -218,6 +243,195 @@ async def test_query_engine_surfaces_retry_status_events(tmp_path: Path):
 
     assert any(isinstance(event, StatusEvent) and "retrying in 1.5s" in event.message for event in events)
     assert isinstance(events[-1], AssistantTurnComplete)
+
+
+@pytest.mark.asyncio
+async def test_query_engine_emits_compact_progress_before_reply(tmp_path: Path, monkeypatch):
+    long_text = "alpha " * 50000
+    monkeypatch.setattr("openharness.services.compact.try_session_memory_compaction", lambda *args, **kwargs: None)
+    monkeypatch.setattr("openharness.services.compact.should_autocompact", lambda *args, **kwargs: True)
+    engine = QueryEngine(
+        api_client=FakeApiClient(
+            [
+                _FakeResponse(
+                    message=ConversationMessage(role="assistant", content=[TextBlock(text="<summary>trimmed</summary>")]),
+                    usage=UsageSnapshot(input_tokens=1, output_tokens=1),
+                ),
+                _FakeResponse(
+                    message=ConversationMessage(role="assistant", content=[TextBlock(text="after compact")]),
+                    usage=UsageSnapshot(input_tokens=1, output_tokens=1),
+                ),
+            ]
+        ),
+        tool_registry=create_default_tool_registry(),
+        permission_checker=PermissionChecker(PermissionSettings()),
+        cwd=tmp_path,
+        model="claude-sonnet-4-6",
+        system_prompt="system",
+    )
+    engine.load_messages(
+        [
+            ConversationMessage(role="user", content=[TextBlock(text=long_text)]),
+            ConversationMessage(role="assistant", content=[TextBlock(text=long_text)]),
+            ConversationMessage(role="user", content=[TextBlock(text=long_text)]),
+            ConversationMessage(role="assistant", content=[TextBlock(text=long_text)]),
+            ConversationMessage(role="user", content=[TextBlock(text=long_text)]),
+            ConversationMessage(role="assistant", content=[TextBlock(text=long_text)]),
+            ConversationMessage(role="user", content=[TextBlock(text=long_text)]),
+            ConversationMessage(role="assistant", content=[TextBlock(text=long_text)]),
+        ]
+    )
+
+    events = [event async for event in engine.submit_message("hello")]
+
+    hooks_start_index = next(i for i, event in enumerate(events) if isinstance(event, CompactProgressEvent) and event.phase == "hooks_start")
+    compact_start_index = next(i for i, event in enumerate(events) if isinstance(event, CompactProgressEvent) and event.phase == "compact_start")
+    final_index = next(i for i, event in enumerate(events) if isinstance(event, AssistantTurnComplete))
+    assert hooks_start_index < compact_start_index
+    assert compact_start_index < final_index
+    assert any(isinstance(event, CompactProgressEvent) and event.phase == "compact_end" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_query_engine_reactive_compacts_after_prompt_too_long(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("openharness.services.compact.try_session_memory_compaction", lambda *args, **kwargs: None)
+    monkeypatch.setattr("openharness.services.compact.should_autocompact", lambda *args, **kwargs: False)
+    engine = QueryEngine(
+        api_client=PromptTooLongThenSuccessApiClient(),
+        tool_registry=create_default_tool_registry(),
+        permission_checker=PermissionChecker(PermissionSettings()),
+        cwd=tmp_path,
+        model="claude-test",
+        system_prompt="system",
+    )
+    engine.load_messages(
+        [
+            ConversationMessage(role="user", content=[TextBlock(text="one")]),
+            ConversationMessage(role="assistant", content=[TextBlock(text="two")]),
+            ConversationMessage(role="user", content=[TextBlock(text="three")]),
+            ConversationMessage(role="assistant", content=[TextBlock(text="four")]),
+            ConversationMessage(role="user", content=[TextBlock(text="five")]),
+            ConversationMessage(role="assistant", content=[TextBlock(text="six")]),
+            ConversationMessage(role="user", content=[TextBlock(text="seven")]),
+            ConversationMessage(role="assistant", content=[TextBlock(text="eight")]),
+        ]
+    )
+
+    events = [event async for event in engine.submit_message("nine")]
+
+    assert any(
+        isinstance(event, CompactProgressEvent)
+        and event.trigger == "reactive"
+        and event.phase == "compact_start"
+        for event in events
+    )
+    assert isinstance(events[-1], AssistantTurnComplete)
+    assert events[-1].message.text == "after reactive compact"
+
+
+@pytest.mark.asyncio
+async def test_query_engine_tracks_recent_read_files_and_skills(tmp_path: Path):
+    sample = tmp_path / "hello.txt"
+    sample.write_text("alpha\nbeta\n", encoding="utf-8")
+    registry = create_default_tool_registry()
+    skill_tool = registry.get("skill")
+    assert skill_tool is not None
+
+    async def _fake_skill_execute(arguments, context):
+        del context
+        return ToolResult(output=f"Loaded skill: {arguments.name}")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(skill_tool, "execute", _fake_skill_execute)
+
+    engine = QueryEngine(
+        api_client=FakeApiClient(
+            [
+                _FakeResponse(
+                    message=ConversationMessage(
+                        role="assistant",
+                        content=[
+                            ToolUseBlock(name="read_file", input={"path": str(sample)}),
+                            ToolUseBlock(name="skill", input={"name": "demo-skill"}),
+                        ],
+                    ),
+                    usage=UsageSnapshot(input_tokens=1, output_tokens=1),
+                ),
+                _FakeResponse(
+                    message=ConversationMessage(role="assistant", content=[TextBlock(text="done")]),
+                    usage=UsageSnapshot(input_tokens=1, output_tokens=1),
+                ),
+            ]
+        ),
+        tool_registry=registry,
+        permission_checker=PermissionChecker(PermissionSettings()),
+        cwd=tmp_path,
+        model="claude-test",
+        system_prompt="system",
+        tool_metadata={},
+    )
+
+    try:
+        events = [event async for event in engine.submit_message("track context")]
+    finally:
+        monkeypatch.undo()
+
+    assert isinstance(events[-1], AssistantTurnComplete)
+    read_state = engine._tool_metadata.get("read_file_state")
+    assert isinstance(read_state, list) and read_state
+    assert read_state[-1]["path"] == str(sample.resolve())
+    assert "alpha" in read_state[-1]["preview"]
+    invoked_skills = engine._tool_metadata.get("invoked_skills")
+    assert isinstance(invoked_skills, list)
+    assert invoked_skills[-1] == "demo-skill"
+
+
+@pytest.mark.asyncio
+async def test_query_engine_tracks_async_agent_activity(tmp_path: Path, monkeypatch):
+    registry = create_default_tool_registry()
+    agent_tool = registry.get("agent")
+    assert agent_tool is not None
+
+    async def _fake_execute(arguments, context):
+        del arguments, context
+        return ToolResult(output="Spawned agent worker@team (task_id=task_123, backend=subprocess)")
+
+    monkeypatch.setattr(agent_tool, "execute", _fake_execute)
+    engine = QueryEngine(
+        api_client=FakeApiClient(
+            [
+                _FakeResponse(
+                    message=ConversationMessage(
+                        role="assistant",
+                        content=[
+                            ToolUseBlock(
+                                name="agent",
+                                input={"description": "Inspect CI", "prompt": "Inspect CI"},
+                            )
+                        ],
+                    ),
+                    usage=UsageSnapshot(input_tokens=1, output_tokens=1),
+                ),
+                _FakeResponse(
+                    message=ConversationMessage(role="assistant", content=[TextBlock(text="spawned")]),
+                    usage=UsageSnapshot(input_tokens=1, output_tokens=1),
+                ),
+            ]
+        ),
+        tool_registry=registry,
+        permission_checker=PermissionChecker(PermissionSettings(mode=PermissionMode.FULL_AUTO)),
+        cwd=tmp_path,
+        model="claude-test",
+        system_prompt="system",
+        tool_metadata={},
+    )
+
+    events = [event async for event in engine.submit_message("spawn helper")]
+
+    assert isinstance(events[-1], AssistantTurnComplete)
+    async_state = engine._tool_metadata.get("async_agent_state")
+    assert isinstance(async_state, list)
+    assert async_state[-1].startswith("Spawned async agent")
 
 
 @pytest.mark.asyncio
