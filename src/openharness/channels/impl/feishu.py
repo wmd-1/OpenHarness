@@ -6,6 +6,7 @@ import os
 import re
 import threading
 from collections import OrderedDict
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -29,6 +30,12 @@ MSG_TYPE_MAP = {
     "file": "[file]",
     "sticker": "[sticker]",
 }
+
+
+@dataclass(frozen=True)
+class _FeishuSenderInfo:
+    open_id: str
+    display_name: str
 
 
 def _extract_share_card_content(content_json: dict, msg_type: str) -> str:
@@ -253,6 +260,7 @@ class FeishuChannel(BaseChannel):
         self._ws_client: Any = None
         self._ws_thread: threading.Thread | None = None
         self._processed_message_ids: OrderedDict[str, None] = OrderedDict()  # Ordered dedup cache
+        self._sender_cache: OrderedDict[str, _FeishuSenderInfo] = OrderedDict()
         self._loop: asyncio.AbstractEventLoop | None = None
 
     async def start(self) -> None:
@@ -842,6 +850,44 @@ class FeishuChannel(BaseChannel):
         except Exception as e:
             logger.error("Error sending Feishu message: {}", e)
 
+    def _resolve_sender_display_name_sync(self, open_id: str) -> str:
+        """Resolve a human-friendly sender name from Feishu contact APIs."""
+        cached = self._sender_cache.get(open_id)
+        if cached is not None:
+            self._sender_cache.move_to_end(open_id)
+            return cached.display_name
+        if not self._client or not open_id:
+            return open_id or "unknown"
+
+        try:
+            import lark_oapi as lark
+
+            request = (
+                lark.api.contact.v3.GetUserRequest.builder()
+                .user_id(open_id)
+                .user_id_type("open_id")
+                .build()
+            )
+            response = self._client.contact.v3.user.get(request)
+            if getattr(response, "success", lambda: False)():
+                user = getattr(getattr(response, "data", None), "user", None)
+                display_name = (
+                    getattr(user, "name", None)
+                    or getattr(user, "en_name", None)
+                    or getattr(user, "nickname", None)
+                    or open_id
+                )
+            else:
+                display_name = open_id
+        except Exception:
+            logger.exception("Failed to resolve Feishu sender name open_id=%s", open_id)
+            display_name = open_id
+
+        self._sender_cache[open_id] = _FeishuSenderInfo(open_id=open_id, display_name=display_name)
+        while len(self._sender_cache) > 512:
+            self._sender_cache.popitem(last=False)
+        return display_name
+
     def _on_message_sync(self, data: "P2ImMessageReceiveV1") -> None:  # noqa: F821
         """
         Sync handler for incoming messages (called from WebSocket thread).
@@ -872,6 +918,12 @@ class FeishuChannel(BaseChannel):
                 return
 
             sender_id = sender.sender_id.open_id if sender.sender_id else "unknown"
+            loop = asyncio.get_running_loop()
+            sender_display_name = await loop.run_in_executor(
+                None,
+                self._resolve_sender_display_name_sync,
+                sender_id,
+            )
             chat_id = message.chat_id
             chat_type = message.chat_type
             msg_type = message.message_type
@@ -937,6 +989,8 @@ class FeishuChannel(BaseChannel):
                     "message_id": message_id,
                     "chat_type": chat_type,
                     "msg_type": msg_type,
+                    "sender_display_name": sender_display_name,
+                    "sender_label": sender_display_name or sender_id,
                 }
             )
 
