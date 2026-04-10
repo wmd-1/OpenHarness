@@ -1346,7 +1346,7 @@ def main(
                 model=session_data.get("model") or model,
                 backend_only=backend_only,
                 base_url=base_url,
-                system_prompt=session_data.get("system_prompt") or system_prompt,
+                system_prompt=system_prompt,
                 api_key=api_key,
                 restore_messages=session_data.get("messages"),
                 restore_tool_metadata=session_data.get("tool_metadata"),
