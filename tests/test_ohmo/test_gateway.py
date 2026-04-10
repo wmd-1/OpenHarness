@@ -219,7 +219,7 @@ async def test_runtime_pool_stream_message_formats_auto_compact_status_for_feish
     updates = [u async for u in pool.stream_message(message, "feishu:c1")]
 
     assert updates[1].kind == "progress"
-    assert updates[1].text == "🧠 聊天有点长啦，我先帮你悄悄压缩一下记忆，马上继续～"
+    assert updates[1].text == "🧠 聊天有点长啦，我先帮你蹦蹦跳跳压缩一下记忆，马上带着重点回来～"
     assert updates[-1].kind == "final"
     assert updates[-1].text == "done"
 
