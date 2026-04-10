@@ -10,7 +10,7 @@ from typing import Optional
 
 import typer
 
-__version__ = "0.1.5"
+__version__ = "0.1.6"
 
 
 def _version_callback(value: bool) -> None:
