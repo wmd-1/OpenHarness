@@ -273,6 +273,7 @@ async def build_runtime(
             "read_file_state": [],
             "invoked_skills": [],
             "async_agent_state": [],
+            "recent_work_log": [],
             "compact_checkpoints": [],
         },
     )

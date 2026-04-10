@@ -10,9 +10,10 @@ import pytest
 from openharness.api.client import ApiMessageCompleteEvent, ApiRetryEvent, ApiTextDeltaEvent
 from openharness.api.errors import RequestFailure
 from openharness.api.usage import UsageSnapshot
-from openharness.config.settings import PermissionSettings
+from openharness.config.settings import PermissionSettings, Settings
 from openharness.engine.messages import ConversationMessage, TextBlock, ToolUseBlock
 from openharness.engine.query_engine import QueryEngine
+from openharness.prompts.context import build_runtime_system_prompt
 from openharness.engine.stream_events import (
     AssistantTextDelta,
     AssistantTurnComplete,
@@ -102,6 +103,42 @@ class PromptTooLongThenSuccessApiClient:
         )
 
 
+class CoordinatorLoopApiClient:
+    def __init__(self) -> None:
+        self.requests = []
+        self._calls = 0
+
+    async def stream_message(self, request):
+        self.requests.append(request)
+        self._calls += 1
+        if self._calls == 1:
+            yield ApiMessageCompleteEvent(
+                message=ConversationMessage(
+                    role="assistant",
+                    content=[
+                        TextBlock(text="Launching a worker."),
+                        ToolUseBlock(
+                            id="toolu_agent_1",
+                            name="agent",
+                            input={
+                                "description": "inspect coordinator wiring",
+                                "prompt": "check whether coordinator mode is active",
+                                "subagent_type": "worker",
+                            },
+                        ),
+                    ],
+                ),
+                usage=UsageSnapshot(input_tokens=2, output_tokens=2),
+                stop_reason=None,
+            )
+            return
+        yield ApiMessageCompleteEvent(
+            message=ConversationMessage(role="assistant", content=[TextBlock(text="Worker launched; coordinator mode is active.")]),
+            usage=UsageSnapshot(input_tokens=2, output_tokens=2),
+            stop_reason=None,
+        )
+
+
 @pytest.mark.asyncio
 async def test_query_engine_plain_text_reply(tmp_path: Path):
     engine = QueryEngine(
@@ -180,6 +217,34 @@ async def test_query_engine_executes_tool_calls(tmp_path: Path):
     assert isinstance(events[-1], AssistantTurnComplete)
     assert "alpha and beta" in events[-1].message.text
     assert len(engine.messages) == 4
+
+
+@pytest.mark.asyncio
+async def test_query_engine_coordinator_mode_uses_coordinator_prompt_and_runs_agent_loop(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OPENHARNESS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("CLAUDE_CODE_COORDINATOR_MODE", "1")
+
+    api_client = CoordinatorLoopApiClient()
+    system_prompt = build_runtime_system_prompt(Settings(), cwd=tmp_path, latest_user_prompt="investigate issue")
+    engine = QueryEngine(
+        api_client=api_client,
+        tool_registry=create_default_tool_registry(),
+        permission_checker=PermissionChecker(PermissionSettings()),
+        cwd=tmp_path,
+        model="claude-test",
+        system_prompt=system_prompt,
+    )
+
+    events = [event async for event in engine.submit_message("investigate issue")]
+
+    assert len(api_client.requests) == 2
+    assert "You are a **coordinator**." in api_client.requests[0].system_prompt
+    assert "Coordinator User Context" in api_client.requests[0].system_prompt
+    assert any(isinstance(event, ToolExecutionStarted) and event.tool_name == "agent" for event in events)
+    agent_results = [event for event in events if isinstance(event, ToolExecutionCompleted) and event.tool_name == "agent"]
+    assert len(agent_results) == 1
+    assert isinstance(events[-1], AssistantTurnComplete)
+    assert "coordinator mode is active" in events[-1].message.text
 
 
 @pytest.mark.asyncio

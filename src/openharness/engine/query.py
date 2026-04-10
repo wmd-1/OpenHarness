@@ -45,6 +45,7 @@ AskUserPrompt = Callable[[str], Awaitable[str]]
 MAX_TRACKED_READ_FILES = 6
 MAX_TRACKED_SKILLS = 8
 MAX_TRACKED_ASYNC_AGENT_EVENTS = 8
+MAX_TRACKED_WORK_LOG = 10
 
 
 def _is_prompt_too_long_error(exc: Exception) -> bool:
@@ -163,6 +164,20 @@ def _remember_async_agent_activity(
         del bucket[:-MAX_TRACKED_ASYNC_AGENT_EVENTS]
 
 
+def _remember_work_log(
+    tool_metadata: dict[str, object] | None,
+    *,
+    entry: str,
+) -> None:
+    bucket = _tool_metadata_bucket(tool_metadata, "recent_work_log")
+    normalized = entry.strip()
+    if not normalized:
+        return
+    bucket.append(normalized[:320])
+    if len(bucket) > MAX_TRACKED_WORK_LOG:
+        del bucket[:-MAX_TRACKED_WORK_LOG]
+
+
 def _update_plan_mode(tool_metadata: dict[str, object] | None, mode: str) -> None:
     if tool_metadata is None:
         return
@@ -206,6 +221,38 @@ def _record_tool_carryover(
         _update_plan_mode(context.tool_metadata, "plan")
     elif tool_name == "exit_plan_mode":
         _update_plan_mode(context.tool_metadata, "default")
+    if tool_name == "read_file" and resolved_file_path is not None:
+        _remember_work_log(
+            context.tool_metadata,
+            entry=f"Read file {resolved_file_path}",
+        )
+    elif tool_name == "bash":
+        command = str(tool_input.get("command") or "").strip()
+        summary = tool_output.splitlines()[0].strip() if tool_output.strip() else "no output"
+        _remember_work_log(
+            context.tool_metadata,
+            entry=f"Ran bash: {command[:160]} [{summary[:120]}]",
+        )
+    elif tool_name == "grep":
+        pattern = str(tool_input.get("pattern") or "").strip()
+        _remember_work_log(
+            context.tool_metadata,
+            entry=f"Searched with grep pattern={pattern[:160]}",
+        )
+    elif tool_name == "skill":
+        _remember_work_log(
+            context.tool_metadata,
+            entry=f"Loaded skill {str(tool_input.get('name') or '').strip()}",
+        )
+    elif tool_name in {"agent", "send_message"}:
+        _remember_work_log(
+            context.tool_metadata,
+            entry=f"Async agent action via {tool_name}",
+        )
+    elif tool_name == "enter_plan_mode":
+        _remember_work_log(context.tool_metadata, entry="Entered plan mode")
+    elif tool_name == "exit_plan_mode":
+        _remember_work_log(context.tool_metadata, entry="Exited plan mode")
 
 
 async def run_query(
