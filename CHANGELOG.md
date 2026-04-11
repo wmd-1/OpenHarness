@@ -37,8 +37,7 @@ The format is based on Keep a Changelog, and this project currently tracks chang
 ### Changed
 
 - React TUI now groups consecutive `tool` + `tool_result` transcript rows into a single compound row: success shows the result line count inline (e.g. `→ 24L`), errors show a red icon and up to 5 lines of error detail beneath the tool row. Standalone successful tool results are suppressed to reduce transcript noise; standalone errors are still surfaced.
-
-### Changed
+- README now links to contribution docs, changelog, showcase material, and provider compatibility guidance.
 
 - README now links to contribution docs, changelog, showcase material, and provider compatibility guidance.
 - README quick start now includes a one-command demo and clearer provider compatibility notes.
