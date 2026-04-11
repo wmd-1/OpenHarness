@@ -415,6 +415,7 @@ class Settings(BaseModel):
     model: str = "claude-sonnet-4-6"
     max_tokens: int = 16384
     base_url: str | None = None
+    timeout: float = 30.0
     api_format: str = "anthropic"  # "anthropic", "openai", or "copilot"
     provider: str = ""
     active_profile: str = "claude-api"
@@ -713,6 +714,10 @@ def _apply_env_overrides(settings: Settings) -> Settings:
     max_tokens = os.environ.get("OPENHARNESS_MAX_TOKENS")
     if max_tokens:
         updates["max_tokens"] = int(max_tokens)
+
+    timeout = os.environ.get("OPENHARNESS_TIMEOUT")
+    if timeout:
+        updates["timeout"] = float(timeout)
 
     max_turns = os.environ.get("OPENHARNESS_MAX_TURNS")
     if max_turns:
