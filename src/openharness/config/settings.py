@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,21 @@ from pydantic import BaseModel, Field
 from openharness.hooks.schemas import HookDefinition
 from openharness.mcp.types import McpServerConfig
 from openharness.permissions.modes import PermissionMode
+
+
+# ANSI escape sequence pattern
+_ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def strip_ansi_escape_sequences(text: str) -> str:
+    """Remove ANSI escape sequences from text.
+
+    This is used to clean environment variables that may contain terminal
+    formatting codes (e.g., '[1m' for bold) which can corrupt API requests.
+    """
+    if not text:
+        return text
+    return _ANSI_ESCAPE_PATTERN.sub("", text)
 
 
 class PathRuleConfig(BaseModel):
@@ -189,6 +205,14 @@ def default_provider_profiles() -> dict[str, ProviderProfile]:
             default_model="kimi-k2.5",
             base_url="https://api.moonshot.cn/v1",
         ),
+        "gemini": ProviderProfile(
+            label="Google Gemini",
+            provider="gemini",
+            api_format="openai",
+            auth_source="gemini_api_key",
+            default_model="gemini-2.5-flash",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        ),
     }
 
 
@@ -275,6 +299,7 @@ def auth_source_provider_name(auth_source: str) -> str:
         "bedrock_api_key": "bedrock",
         "vertex_api_key": "vertex",
         "moonshot_api_key": "moonshot",
+        "gemini_api_key": "gemini",
     }
     return mapping.get(auth_source, auth_source)
 
@@ -312,6 +337,8 @@ def default_auth_source_for_provider(provider: str, api_format: str | None = Non
         return "vertex_api_key"
     if provider == "moonshot":
         return "moonshot_api_key"
+    if provider == "gemini":
+        return "gemini_api_key"
     if provider == "openai" or api_format == "openai":
         return "openai_api_key"
     return "anthropic_api_key"
@@ -651,6 +678,9 @@ class Settings(BaseModel):
     def merge_cli_overrides(self, **overrides: Any) -> Settings:
         """Return a new Settings with CLI overrides applied (non-None values only)."""
         updates = {k: v for k, v in overrides.items() if v is not None}
+        # Strip ANSI escape sequences from model name if present
+        if "model" in updates and isinstance(updates["model"], str):
+            updates["model"] = strip_ansi_escape_sequences(updates["model"])
         merged = self.model_copy(update=updates)
         if not updates:
             return merged
@@ -668,7 +698,9 @@ def _apply_env_overrides(settings: Settings) -> Settings:
     updates: dict[str, Any] = {}
     model = os.environ.get("ANTHROPIC_MODEL") or os.environ.get("OPENHARNESS_MODEL")
     if model:
-        updates["model"] = model
+        # Strip ANSI escape sequences that may be present if the environment
+        # variable was set with terminal formatting (e.g., bold text)
+        updates["model"] = strip_ansi_escape_sequences(model)
 
     base_url = (
         os.environ.get("ANTHROPIC_BASE_URL")
