@@ -183,6 +183,7 @@ async def _rg_grep(
         cwd=str(root),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        limit=8 * 1024 * 1024,
     )
 
     matches: list[str] = []
@@ -239,6 +240,7 @@ async def _rg_grep_file(
         cwd=str(path.parent),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        limit=8 * 1024 * 1024,
     )
 
     matches: list[str] = []
@@ -282,7 +284,10 @@ async def _collect_rg_matches(
 ) -> None:
     assert process.stdout is not None
     while len(matches) < limit:
-        raw = await process.stdout.readline()
+        try:
+            raw = await process.stdout.readline()
+        except ValueError:
+            continue
         if not raw:
             break
         line = raw.decode("utf-8", errors="replace").rstrip("\n")
@@ -300,7 +305,10 @@ async def _collect_rg_file_matches(
 ) -> None:
     assert process.stdout is not None
     while len(matches) < limit:
-        raw = await process.stdout.readline()
+        try:
+            raw = await process.stdout.readline()
+        except ValueError:
+            continue
         if not raw:
             break
         line = raw.decode("utf-8", errors="replace").rstrip("\n")
