@@ -116,6 +116,7 @@ class OhmoSessionRuntimePool:
             session_backend=self._session_backend,
             enforce_max_turns=self._max_turns is not None,
             restore_messages=snapshot.get("messages") if snapshot else None,
+            restore_tool_metadata=snapshot.get("tool_metadata") if snapshot else None,
             extra_skill_dirs=(str(get_skills_dir(self._workspace)),),
             extra_plugin_roots=(str(get_plugins_dir(self._workspace)),),
         )
@@ -425,6 +426,7 @@ class OhmoSessionRuntimePool:
             reply_parts.append(event.message.text.strip())
 
     async def _save_snapshot(self, bundle: RuntimeBundle, session_key: str, user_prompt: str) -> None:
+        tool_metadata = getattr(bundle.engine, "tool_metadata", {}) or {}
         self._session_backend.save_snapshot(
             cwd=self._cwd,
             model=bundle.current_settings().model,
@@ -433,6 +435,7 @@ class OhmoSessionRuntimePool:
             usage=bundle.engine.total_usage,
             session_id=bundle.session_id,
             session_key=session_key,
+            tool_metadata=tool_metadata,
         )
         logger.info(
             "ohmo runtime saved snapshot session_key=%s session_id=%s message_count=%s",
@@ -459,6 +462,7 @@ class OhmoSessionRuntimePool:
             session_backend=self._session_backend,
             enforce_max_turns=self._max_turns is not None,
             restore_messages=[message.model_dump(mode="json") for message in snapshot],
+            restore_tool_metadata=getattr(bundle.engine, "tool_metadata", {}) or {},
             extra_skill_dirs=(str(get_skills_dir(self._workspace)),),
             extra_plugin_roots=(str(get_plugins_dir(self._workspace)),),
         )

@@ -16,7 +16,6 @@ from openharness.api.provider import auth_status, detect_provider
 from openharness.bridge import get_bridge_manager
 from openharness.commands import CommandContext, CommandResult, create_default_command_registry
 from openharness.config import get_config_file_path, load_settings
-from openharness.config.settings import display_model_setting
 from openharness.engine import QueryEngine
 from openharness.engine.messages import ConversationMessage, ToolResultBlock, ToolUseBlock
 from openharness.engine.query import MaxTurnsExceeded
@@ -175,6 +174,7 @@ async def build_runtime(
     permission_prompt: PermissionPrompt | None = None,
     ask_user_prompt: AskUserPrompt | None = None,
     restore_messages: list[dict] | None = None,
+    restore_tool_metadata: dict[str, object] | None = None,
     enforce_max_turns: bool = True,
     session_backend: SessionBackend | None = None,
     permission_mode: str | None = None,
@@ -205,11 +205,12 @@ async def build_runtime(
     await mcp_manager.connect_all()
     tool_registry = create_default_tool_registry(mcp_manager)
     provider = detect_provider(settings)
-    _, active_profile = settings.resolve_profile()
     bridge_manager = get_bridge_manager()
     app_state = AppStateStore(
         AppState(
-            model=display_model_setting(active_profile),
+            # Show the effective runtime model (after CLI/env/profile merges),
+            # not profile.last_model which may be stale.
+            model=settings.model,
             permission_mode=settings.permission.mode.value,
             theme=settings.theme,
             cwd=cwd,
@@ -251,6 +252,26 @@ async def build_runtime(
 
     session_id = uuid4().hex[:12]
 
+    restored_metadata = {
+        "permission_mode": settings.permission.mode.value,
+        "read_file_state": [],
+        "invoked_skills": [],
+        "async_agent_state": [],
+        "recent_work_log": [],
+        "recent_verified_work": [],
+        "task_focus_state": {
+            "goal": "",
+            "recent_goals": [],
+            "active_artifacts": [],
+            "verified_state": [],
+            "next_step": "",
+        },
+        "compact_checkpoints": [],
+    }
+    if isinstance(restore_tool_metadata, dict):
+        for key, value in restore_tool_metadata.items():
+            restored_metadata[key] = value
+
     engine = QueryEngine(
         api_client=resolved_api_client,
         tool_registry=tool_registry,
@@ -268,12 +289,8 @@ async def build_runtime(
             "bridge_manager": bridge_manager,
             "extra_skill_dirs": normalized_skill_dirs,
             "extra_plugin_roots": normalized_plugin_roots,
-            "permission_mode": settings.permission.mode.value,
             "session_id": session_id,
-            "read_file_state": [],
-            "invoked_skills": [],
-            "async_agent_state": [],
-            "compact_checkpoints": [],
+            **restored_metadata,
         },
     )
     # Restore messages from a saved session if provided
@@ -319,6 +336,13 @@ async def start_runtime(bundle: RuntimeBundle) -> None:
 
 async def close_runtime(bundle: RuntimeBundle) -> None:
     """Close runtime-owned resources."""
+    # Extract local environment rules from session before closing
+    try:
+        from openharness.personalization.session_hook import update_rules_from_session
+        update_rules_from_session(bundle.engine.messages)
+    except Exception:
+        pass  # personalization is best-effort, never block session end
+
     await bundle.mcp_manager.close()
     await bundle.hook_executor.execute(
         HookEvent.SESSION_END,
@@ -395,9 +419,8 @@ def sync_app_state(bundle: RuntimeBundle) -> None:
     if bundle.enforce_max_turns:
         bundle.engine.set_max_turns(settings.max_turns)
     provider = detect_provider(settings)
-    _, active_profile = settings.resolve_profile()
     bundle.app_state.set(
-        model=display_model_setting(active_profile),
+        model=settings.model,
         permission_mode=settings.permission.mode.value,
         theme=settings.theme,
         cwd=bundle.cwd,
@@ -501,6 +524,7 @@ async def handle_line(
                 messages=bundle.engine.messages,
                 usage=bundle.engine.total_usage,
                 session_id=bundle.session_id,
+                tool_metadata=bundle.engine.tool_metadata,
             )
         if result.continue_pending:
             settings = bundle.current_settings()
@@ -530,6 +554,7 @@ async def handle_line(
                 messages=bundle.engine.messages,
                 usage=bundle.engine.total_usage,
                 session_id=bundle.session_id,
+                tool_metadata=bundle.engine.tool_metadata,
             )
         sync_app_state(bundle)
         return not result.should_exit
@@ -560,6 +585,7 @@ async def handle_line(
             messages=bundle.engine.messages,
             usage=bundle.engine.total_usage,
             session_id=bundle.session_id,
+            tool_metadata=bundle.engine.tool_metadata,
         )
         sync_app_state(bundle)
         return True
@@ -570,6 +596,7 @@ async def handle_line(
         messages=bundle.engine.messages,
         usage=bundle.engine.total_usage,
         session_id=bundle.session_id,
+        tool_metadata=bundle.engine.tool_metadata,
     )
     sync_app_state(bundle)
     return True

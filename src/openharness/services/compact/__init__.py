@@ -12,7 +12,7 @@ import asyncio
 import inspect
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal
 from uuid import uuid4
@@ -78,6 +78,31 @@ ERROR_MESSAGE_INCOMPLETE_RESPONSE = "Compaction interrupted before a complete su
 
 CompactTrigger = Literal["auto", "manual", "reactive"]
 CompactProgressCallback = Callable[[CompactProgressEvent], Awaitable[None]]
+CompactionKind = Literal["full", "session_memory"]
+
+
+@dataclass
+class CompactAttachment:
+    """Structured compact asset carried across a compaction boundary."""
+
+    kind: str
+    title: str
+    body: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class CompactionResult:
+    """Structured compaction result, inspired by Claude Code's result shape."""
+
+    trigger: CompactTrigger
+    compact_kind: CompactionKind
+    boundary_marker: ConversationMessage
+    summary_messages: list[ConversationMessage]
+    messages_to_keep: list[ConversationMessage]
+    attachments: list[CompactAttachment]
+    hook_results: list[CompactAttachment]
+    compact_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -315,77 +340,332 @@ def _extract_discovered_tools(messages: list[ConversationMessage]) -> list[str]:
     return discovered
 
 
-def build_compact_carryover_message(
+def _create_attachment(kind: str, title: str, lines: list[str], *, metadata: dict[str, Any] | None = None) -> CompactAttachment | None:
+    filtered = [line.rstrip() for line in lines if line and line.strip()]
+    if not filtered:
+        return None
+    return CompactAttachment(
+        kind=kind,
+        title=title,
+        body="\n".join(filtered),
+        metadata=_sanitize_metadata(metadata or {}),
+    )
+
+
+def render_compact_attachment(attachment: CompactAttachment) -> ConversationMessage:
+    """Serialize a structured compact attachment into a conversation message."""
+    header = f"[Compact attachment: {attachment.kind}] {attachment.title}".strip()
+    text = f"{header}\n{attachment.body}".strip()
+    return ConversationMessage.from_user_text(text)
+
+
+def create_compact_boundary_message(metadata: dict[str, Any]) -> ConversationMessage:
+    """Create a boundary marker message for post-compact conversation rebuild."""
+    lines = [
+        "[Compact boundary marker]",
+        "Earlier conversation was compacted. Use the summary and preserved assets below as the continuity boundary.",
+    ]
+    trigger = str(metadata.get("trigger") or "").strip()
+    compact_kind = str(metadata.get("compact_kind") or "").strip()
+    pre_messages = metadata.get("pre_compact_message_count")
+    pre_tokens = metadata.get("pre_compact_token_count")
+    post_messages = metadata.get("post_compact_message_count")
+    post_tokens = metadata.get("post_compact_token_count")
+    if trigger:
+        lines.append(f"Trigger: {trigger}")
+    if compact_kind:
+        lines.append(f"Compaction kind: {compact_kind}")
+    if pre_messages is not None or pre_tokens is not None:
+        lines.append(
+            "Pre-compact footprint: "
+            f"messages={pre_messages if pre_messages is not None else 'unknown'}, "
+            f"tokens={pre_tokens if pre_tokens is not None else 'unknown'}"
+        )
+    if post_messages is not None or post_tokens is not None:
+        lines.append(
+            "Post-compact footprint: "
+            f"messages={post_messages if post_messages is not None else 'unknown'}, "
+            f"tokens={post_tokens if post_tokens is not None else 'unknown'}"
+        )
+    anchor = str(metadata.get("preserved_segment_anchor") or "").strip()
+    if anchor:
+        lines.append(f"Preserved segment anchor: {anchor}")
+    return ConversationMessage.from_user_text("\n".join(lines))
+
+
+def build_post_compact_messages(result: CompactionResult) -> list[ConversationMessage]:
+    """Rebuild the post-compact message list in Claude Code's ordering."""
+    attachment_messages = [render_compact_attachment(attachment) for attachment in result.attachments]
+    hook_messages = [render_compact_attachment(attachment) for attachment in result.hook_results]
+    return [
+        result.boundary_marker,
+        *result.summary_messages,
+        *result.messages_to_keep,
+        *attachment_messages,
+        *hook_messages,
+    ]
+
+
+def _create_recent_attachments_attachment_if_needed(
+    attachment_paths: list[str],
+) -> CompactAttachment | None:
+    if not attachment_paths:
+        return None
+    return _create_attachment(
+        "recent_attachments",
+        "Recent local attachments",
+        ["Keep these local attachment paths in working memory:"] + [f"- {path}" for path in attachment_paths],
+        metadata={"paths": attachment_paths},
+    )
+
+
+def create_recent_files_attachment_if_needed(
+    read_file_state: Any,
+) -> CompactAttachment | None:
+    if not isinstance(read_file_state, list) or not read_file_state:
+        return None
+    lines = ["Recently read files that may still matter:"]
+    entries: list[dict[str, Any]] = []
+    normalized_entries = [
+        entry
+        for entry in read_file_state
+        if isinstance(entry, dict) and str(entry.get("path") or "").strip()
+    ]
+    normalized_entries.sort(
+        key=lambda entry: float(entry.get("timestamp") or 0.0),
+        reverse=True,
+    )
+    for entry in normalized_entries[:4]:
+        if not isinstance(entry, dict):
+            continue
+        path = str(entry.get("path") or "").strip()
+        span = str(entry.get("span") or "").strip()
+        preview = str(entry.get("preview") or "").strip()
+        timestamp = entry.get("timestamp")
+        if not path:
+            continue
+        bullet = f"- {path}"
+        if span:
+            bullet += f" ({span})"
+        lines.append(bullet)
+        if preview:
+            lines.append(f"  Preview: {preview}")
+        entries.append({"path": path, "span": span, "preview": preview, "timestamp": timestamp})
+    return _create_attachment("recent_files", "Recently read files", lines, metadata={"entries": entries})
+
+
+def create_task_focus_attachment_if_needed(
+    metadata: dict[str, Any],
+) -> CompactAttachment | None:
+    state = metadata.get("task_focus_state")
+    if not isinstance(state, dict):
+        return None
+    goal = str(state.get("goal") or "").strip()
+    recent_goals = [
+        str(item).strip()
+        for item in state.get("recent_goals", [])
+        if str(item).strip()
+    ]
+    active_artifacts = [
+        str(item).strip()
+        for item in state.get("active_artifacts", [])
+        if str(item).strip()
+    ]
+    verified_state = [
+        str(item).strip()
+        for item in state.get("verified_state", [])
+        if str(item).strip()
+    ]
+    next_step = str(state.get("next_step") or "").strip()
+    if not any((goal, recent_goals, active_artifacts, verified_state, next_step)):
+        return None
+    lines = ["Current working focus to preserve across compaction:"]
+    if goal:
+        lines.append(f"- Goal: {goal}")
+    if recent_goals:
+        lines.append("- Recent user goals that still matter:")
+        lines.extend(f"  - {item}" for item in recent_goals[-3:])
+    if active_artifacts:
+        lines.append("- Active artifacts in play:")
+        lines.extend(f"  - {item}" for item in active_artifacts[-5:])
+    if verified_state:
+        lines.append("- Verified state already established:")
+        lines.extend(f"  - {item}" for item in verified_state[-4:])
+    if next_step:
+        lines.append(f"- Suggested next step: {next_step}")
+    return _create_attachment(
+        "task_focus",
+        "Current working focus",
+        lines,
+        metadata={
+            "goal": goal,
+            "recent_goals": recent_goals[-3:],
+            "active_artifacts": active_artifacts[-5:],
+            "verified_state": verified_state[-4:],
+            "next_step": next_step,
+        },
+    )
+
+
+def create_recent_verified_work_attachment_if_needed(
+    verified_work: Any,
+) -> CompactAttachment | None:
+    if not isinstance(verified_work, list) or not verified_work:
+        return None
+    entries = [str(entry).strip() for entry in verified_work[-8:] if str(entry).strip()]
+    if not entries:
+        return None
+    return _create_attachment(
+        "recent_verified_work",
+        "Recently verified work",
+        ["These steps or conclusions were explicitly verified before compaction:"] + [f"- {entry}" for entry in entries],
+        metadata={"entries": entries},
+    )
+
+
+def create_plan_attachment_if_needed(metadata: dict[str, Any]) -> CompactAttachment | None:
+    permission_mode = str(metadata.get("permission_mode") or "").strip().lower()
+    if permission_mode != "plan":
+        return None
+    lines = [
+        "Plan mode is still active for this session.",
+        "Do not execute mutating tools until the user explicitly exits plan mode.",
+    ]
+    plan_summary = str(metadata.get("plan_summary") or "").strip()
+    if plan_summary:
+        lines.append(f"Current plan summary: {plan_summary}")
+    return _create_attachment(
+        "plan",
+        "Plan mode context",
+        lines,
+        metadata={"permission_mode": permission_mode, "plan_summary": plan_summary},
+    )
+
+
+def create_invoked_skills_attachment_if_needed(
+    invoked_skills: Any,
+) -> CompactAttachment | None:
+    if not isinstance(invoked_skills, list) or not invoked_skills:
+        return None
+    normalized = [str(skill).strip() for skill in invoked_skills[-8:] if str(skill).strip()]
+    if not normalized:
+        return None
+    return _create_attachment(
+        "invoked_skills",
+        "Skills used earlier in the session",
+        ["The following skills were invoked and may still shape the next step:", "- " + ", ".join(normalized)],
+        metadata={"skills": normalized},
+    )
+
+
+def create_async_agent_attachment_if_needed(
+    async_agent_state: Any,
+) -> CompactAttachment | None:
+    if not isinstance(async_agent_state, list) or not async_agent_state:
+        return None
+    entries = [str(entry).strip() for entry in async_agent_state[-6:] if str(entry).strip()]
+    if not entries:
+        return None
+    return _create_attachment(
+        "async_agents",
+        "Async agent and background task state",
+        ["Recent async-agent/background-task activity:"] + [f"- {entry}" for entry in entries],
+        metadata={"entries": entries},
+    )
+
+
+def create_work_log_attachment_if_needed(
+    recent_work_log: Any,
+) -> CompactAttachment | None:
+    if not isinstance(recent_work_log, list) or not recent_work_log:
+        return None
+    entries = [str(entry).strip() for entry in recent_work_log[-8:] if str(entry).strip()]
+    if not entries:
+        return None
+    return _create_attachment(
+        "recent_work_log",
+        "Recent execution checkpoints",
+        ["Recent work and verification steps taken in this session:"] + [f"- {entry}" for entry in entries],
+        metadata={"entries": entries},
+    )
+
+
+def _create_hook_attachments(hook_note: str | None) -> list[CompactAttachment]:
+    if not hook_note or not hook_note.strip():
+        return []
+    attachment = _create_attachment(
+        "hook_results",
+        "Compact hook notes",
+        [hook_note.strip()],
+        metadata={"note": hook_note.strip()},
+    )
+    return [attachment] if attachment is not None else []
+
+
+def _build_compact_attachments(
     messages: list[ConversationMessage],
     *,
-    metadata: dict[str, Any] | None = None,
-    hook_note: str | None = None,
-) -> ConversationMessage | None:
-    """Preserve lightweight runtime context that should survive compaction."""
+    metadata: dict[str, Any] | None,
+) -> list[CompactAttachment]:
     metadata = metadata or {}
+    attachments: list[CompactAttachment] = []
     attachment_paths = _extract_attachment_paths(messages)
-    discovered_tools = _extract_discovered_tools(messages)
-    permission_mode = str(metadata.get("permission_mode") or "").strip().lower()
-    read_file_state = metadata.get("read_file_state")
-    invoked_skills = metadata.get("invoked_skills")
-    async_agent_state = metadata.get("async_agent_state")
-    compact_last = metadata.get("compact_last")
+    builders = [
+        create_task_focus_attachment_if_needed(metadata),
+        create_recent_verified_work_attachment_if_needed(metadata.get("recent_verified_work")),
+        _create_recent_attachments_attachment_if_needed(attachment_paths),
+        create_recent_files_attachment_if_needed(metadata.get("read_file_state")),
+        create_plan_attachment_if_needed(metadata),
+        create_invoked_skills_attachment_if_needed(metadata.get("invoked_skills")),
+        create_async_agent_attachment_if_needed(metadata.get("async_agent_state")),
+        create_work_log_attachment_if_needed(metadata.get("recent_work_log")),
+    ]
+    attachments.extend(attachment for attachment in builders if attachment is not None)
+    return attachments
 
-    lines: list[str] = []
-    if permission_mode == "plan":
-        lines.extend(
-            [
-                "Plan mode is still active for this session.",
-                "Do not execute mutating tools until the user exits plan mode.",
-            ]
-        )
-    if attachment_paths:
-        lines.append("Recent local attachments to keep in mind:")
-        lines.extend(f"- {path}" for path in attachment_paths)
-    if discovered_tools:
-        lines.append("Tools already discovered or used in this session:")
-        lines.append("- " + ", ".join(discovered_tools))
-    if isinstance(read_file_state, list) and read_file_state:
-        lines.append("Recently read files to keep in working memory:")
-        for entry in read_file_state[-4:]:
-            if not isinstance(entry, dict):
-                continue
-            path = str(entry.get("path") or "").strip()
-            span = str(entry.get("span") or "").strip()
-            preview = str(entry.get("preview") or "").strip()
-            if not path:
-                continue
-            bullet = f"- {path}"
-            if span:
-                bullet += f" ({span})"
-            lines.append(bullet)
-            if preview:
-                lines.append(f"  Preview: {preview}")
-    if isinstance(invoked_skills, list) and invoked_skills:
-        lines.append("Skills invoked earlier in the session:")
-        lines.append("- " + ", ".join(str(skill) for skill in invoked_skills[-8:]))
-    if isinstance(async_agent_state, list) and async_agent_state:
-        lines.append("Async agent / background task state:")
-        lines.extend(f"- {entry}" for entry in async_agent_state[-6:])
-    if isinstance(compact_last, dict) and compact_last:
-        checkpoint = str(compact_last.get("checkpoint") or "").strip()
-        token_count = compact_last.get("token_count")
-        if checkpoint:
-            if token_count is not None:
-                lines.append(
-                    f"Last compact checkpoint: {checkpoint} (token_count={token_count})"
-                )
-            else:
-                lines.append(f"Last compact checkpoint: {checkpoint}")
-    if hook_note:
-        lines.append("Compact hook note:")
-        lines.append(hook_note)
 
-    if not lines:
-        return None
-    return ConversationMessage.from_user_text(
-        "Carry-over context preserved after compaction:\n" + "\n".join(lines)
+def _finalize_compaction_result(result: CompactionResult) -> CompactionResult:
+    messages = build_post_compact_messages(result)
+    result.compact_metadata.setdefault("post_compact_message_count", len(messages))
+    result.compact_metadata.setdefault("post_compact_token_count", estimate_message_tokens(messages))
+    result.boundary_marker = create_compact_boundary_message(result.compact_metadata)
+    return result
+
+
+def _metadata_has_checkpoint(metadata: dict[str, Any] | None, checkpoint: str) -> bool:
+    if metadata is None:
+        return False
+    checkpoints = metadata.get("compact_checkpoints")
+    if not isinstance(checkpoints, list):
+        return False
+    return any(isinstance(entry, dict) and entry.get("checkpoint") == checkpoint for entry in checkpoints)
+
+
+def _build_passthrough_compaction_result(
+    messages: list[ConversationMessage],
+    *,
+    trigger: CompactTrigger,
+    compact_kind: CompactionKind,
+    metadata: dict[str, Any] | None = None,
+) -> CompactionResult:
+    compact_metadata = {
+        "trigger": trigger,
+        "compact_kind": compact_kind,
+        "pre_compact_message_count": len(messages),
+        "pre_compact_token_count": estimate_message_tokens(messages),
+        **_sanitize_metadata(metadata or {}),
+    }
+    result = CompactionResult(
+        trigger=trigger,
+        compact_kind=compact_kind,
+        boundary_marker=create_compact_boundary_message(compact_metadata),
+        summary_messages=[],
+        messages_to_keep=list(messages),
+        attachments=[],
+        hook_results=[],
+        compact_metadata=compact_metadata,
     )
+    return _finalize_compaction_result(result)
 
 
 # ---------------------------------------------------------------------------
@@ -493,7 +773,9 @@ def try_session_memory_compaction(
     messages: list[ConversationMessage],
     *,
     preserve_recent: int = SESSION_MEMORY_KEEP_RECENT,
-) -> list[ConversationMessage] | None:
+    trigger: CompactTrigger = "auto",
+    metadata: dict[str, Any] | None = None,
+) -> CompactionResult | None:
     """Cheap deterministic compaction for long chats before full LLM compaction."""
     if len(messages) <= preserve_recent + 4:
         return None
@@ -502,13 +784,33 @@ def try_session_memory_compaction(
     summary_message = _build_session_memory_message(older)
     if summary_message is None:
         return None
-    result = [summary_message, *newer]
+    provisional = [summary_message, *newer]
     if (
-        estimate_message_tokens(result) >= estimate_message_tokens(messages)
-        and len(result) >= len(messages)
+        estimate_message_tokens(provisional) >= estimate_message_tokens(messages)
+        and len(provisional) >= len(messages)
     ):
         return None
-    return result
+    compact_metadata = {
+        "trigger": trigger,
+        "compact_kind": "session_memory",
+        "pre_compact_message_count": len(messages),
+        "pre_compact_token_count": estimate_message_tokens(messages),
+        "preserve_recent": preserve_recent,
+        "used_session_memory": True,
+        "pre_compact_discovered_tools": _extract_discovered_tools(older),
+        "attachments": _extract_attachment_paths(older),
+    }
+    result = CompactionResult(
+        trigger=trigger,
+        compact_kind="session_memory",
+        boundary_marker=create_compact_boundary_message(compact_metadata),
+        summary_messages=[summary_message],
+        messages_to_keep=list(newer),
+        attachments=_build_compact_attachments(older, metadata=metadata),
+        hook_results=[],
+        compact_metadata=compact_metadata,
+    )
+    return _finalize_compaction_result(result)
 
 
 # ---------------------------------------------------------------------------
@@ -668,7 +970,7 @@ async def compact_conversation(
     emit_hooks_start: bool = True,
     hook_executor: HookExecutor | None = None,
     carryover_metadata: dict[str, Any] | None = None,
-) -> list[ConversationMessage]:
+) -> CompactionResult:
     """Compact messages by calling the LLM to produce a summary.
 
     1. Microcompact first (cheap token reduction).
@@ -686,12 +988,17 @@ async def compact_conversation(
         suppress_follow_up: If True, instruct the model not to ask follow-ups.
 
     Returns:
-        The new compacted message list.
+        Structured compaction result that can be rebuilt into post-compact messages.
     """
     from openharness.api.client import ApiMessageRequest, ApiMessageCompleteEvent
 
     if len(messages) <= preserve_recent:
-        return list(messages)
+        return _build_passthrough_compaction_result(
+            messages,
+            trigger=trigger,
+            compact_kind="full",
+            metadata={"reason": "conversation already within preserve_recent window"},
+        )
 
     # Step 1: microcompact to reduce tokens cheaply
     messages, tokens_freed = microcompact_messages(messages, keep_recent=DEFAULT_KEEP_RECENT)
@@ -761,7 +1068,12 @@ async def compact_conversation(
                 checkpoint="compact_failed",
                 metadata=failed_checkpoint,
             )
-            return messages
+            return _build_passthrough_compaction_result(
+                messages,
+                trigger=trigger,
+                compact_kind="full",
+                metadata={"reason": reason},
+            )
     compact_start_checkpoint = _record_compact_checkpoint(
         carryover_metadata,
         checkpoint="compact_start",
@@ -891,7 +1203,12 @@ async def compact_conversation(
             ),
         )
         log.warning("Compact summary was empty — returning original messages")
-        return messages
+        return _build_passthrough_compaction_result(
+            messages,
+            trigger=trigger,
+            compact_kind="full",
+            metadata={"reason": ERROR_MESSAGE_INCOMPLETE_RESPONSE},
+        )
 
     # Step 4: build the new message list
     summary_content = build_compact_summary_message(
@@ -900,17 +1217,7 @@ async def compact_conversation(
         recent_preserved=len(newer) > 0,
     )
     summary_msg = ConversationMessage.from_user_text(summary_content)
-    carryover_msg = build_compact_carryover_message(
-        older,
-        metadata=carryover_metadata,
-    )
-
-    result = [summary_msg]
-    if carryover_msg is not None:
-        result.append(carryover_msg)
-    result.extend(newer)
-    post_compact_tokens = estimate_message_tokens(result)
-    post_hook_result = None
+    initial_post_compact_tokens = estimate_message_tokens([summary_msg, *newer])
     if hook_executor is not None:
         post_hook_result = await hook_executor.execute(
             HookEvent.POST_COMPACT,
@@ -919,9 +1226,9 @@ async def compact_conversation(
                 "trigger": trigger,
                 "model": model,
                 "pre_compact_message_count": len(messages),
-                "post_compact_message_count": len(result),
+                "post_compact_message_count": len(newer) + 1,
                 "pre_compact_tokens": pre_compact_tokens,
-                "post_compact_tokens": post_compact_tokens,
+                "post_compact_tokens": initial_post_compact_tokens,
                 "attachments": attachment_paths,
                 "discovered_tools": discovered_tools,
                 **(carryover_metadata or {}),
@@ -932,20 +1239,51 @@ async def compact_conversation(
             for result in post_hook_result.results
             if result.output.strip()
         )
-        if hook_note:
-            carryover_msg = build_compact_carryover_message(
-                older,
-                metadata=carryover_metadata,
-                hook_note=hook_note,
-            )
-            result = [summary_msg]
-            if carryover_msg is not None:
-                result.append(carryover_msg)
-            result.extend(newer)
-            post_compact_tokens = estimate_message_tokens(result)
+        hook_attachments = _create_hook_attachments(hook_note)
+    else:
+        hook_attachments = []
+
+    compact_metadata = {
+        "trigger": trigger,
+        "compact_kind": "full",
+        "pre_compact_message_count": len(messages),
+        "pre_compact_token_count": pre_compact_tokens,
+        "preserve_recent": preserve_recent,
+        "tokens_freed_by_microcompact": tokens_freed,
+        "pre_compact_discovered_tools": discovered_tools,
+        "used_head_truncation_retry": ptl_retries > 0,
+        "used_context_collapse": _metadata_has_checkpoint(carryover_metadata, "query_context_collapse_end"),
+        "used_session_memory": False,
+        "retry_attempts": max(0, attempt - 1 if "attempt" in locals() else 0),
+        "attachments": attachment_paths,
+    }
+    if carryover_metadata is not None:
+        checkpoints = carryover_metadata.get("compact_checkpoints")
+        if isinstance(checkpoints, list):
+            compact_metadata["compact_checkpoints"] = checkpoints
+        compact_last = carryover_metadata.get("compact_last")
+        if isinstance(compact_last, dict):
+            compact_metadata["compact_last"] = compact_last
+
+    compaction_result = CompactionResult(
+        trigger=trigger,
+        compact_kind="full",
+        boundary_marker=create_compact_boundary_message(compact_metadata),
+        summary_messages=[summary_msg],
+        messages_to_keep=list(newer),
+        attachments=_build_compact_attachments(older, metadata=carryover_metadata),
+        hook_results=hook_attachments,
+        compact_metadata=compact_metadata,
+    )
+    compaction_result = _finalize_compaction_result(compaction_result)
+    post_compact_messages = build_post_compact_messages(compaction_result)
+    post_compact_tokens = estimate_message_tokens(post_compact_messages)
+    compaction_result.compact_metadata["post_compact_message_count"] = len(post_compact_messages)
+    compaction_result.compact_metadata["post_compact_token_count"] = post_compact_tokens
+    compaction_result.boundary_marker = create_compact_boundary_message(compaction_result.compact_metadata)
     log.info(
         "Compaction done: %d -> %d messages, ~%d -> ~%d tokens (saved ~%d)",
-        len(messages), len(result),
+        len(messages), len(post_compact_messages),
         pre_compact_tokens, post_compact_tokens,
         pre_compact_tokens - post_compact_tokens,
     )
@@ -959,11 +1297,11 @@ async def compact_conversation(
             carryover_metadata,
             checkpoint="compact_end",
             trigger=trigger,
-            message_count=len(result),
+            message_count=len(post_compact_messages),
             token_count=post_compact_tokens,
             details={
                 "pre_compact_message_count": len(messages),
-                "post_compact_message_count": len(result),
+                "post_compact_message_count": len(post_compact_messages),
                 "pre_compact_tokens": pre_compact_tokens,
                 "post_compact_tokens": post_compact_tokens,
                 "tokens_saved": pre_compact_tokens - post_compact_tokens,
@@ -972,7 +1310,7 @@ async def compact_conversation(
             },
         ),
     )
-    return result
+    return compaction_result
 
 
 # ---------------------------------------------------------------------------
@@ -1061,7 +1399,12 @@ async def auto_compact_if_needed(
         if not force and not should_autocompact(messages, model, state):
             return messages, True
 
-    session_memory = try_session_memory_compaction(messages, preserve_recent=max(preserve_recent, SESSION_MEMORY_KEEP_RECENT))
+    session_memory = try_session_memory_compaction(
+        messages,
+        preserve_recent=max(preserve_recent, SESSION_MEMORY_KEEP_RECENT),
+        trigger=trigger,
+        metadata=carryover_metadata,
+    )
     if session_memory is not None:
         await _emit_progress(
             progress_callback,
@@ -1087,15 +1430,15 @@ async def auto_compact_if_needed(
                 carryover_metadata,
                 checkpoint="query_session_memory_end",
                 trigger=trigger,
-                message_count=len(session_memory),
-                token_count=estimate_message_tokens(session_memory),
+                message_count=len(build_post_compact_messages(session_memory)),
+                token_count=estimate_message_tokens(build_post_compact_messages(session_memory)),
             ),
         )
         state.compacted = True
         state.turn_counter += 1
         state.turn_id = uuid4().hex
         state.consecutive_failures = 0
-        return session_memory, True
+        return build_post_compact_messages(session_memory), True
 
     # Full compact needed
     try:
@@ -1115,7 +1458,7 @@ async def auto_compact_if_needed(
         state.turn_counter += 1
         state.turn_id = uuid4().hex
         state.consecutive_failures = 0
-        return result, True
+        return build_post_compact_messages(result), True
     except Exception as exc:
         state.consecutive_failures += 1
         _record_compact_checkpoint(
@@ -1180,12 +1523,16 @@ def compact_messages(
 __all__ = [
     "AUTO_COMPACT_BUFFER_TOKENS",
     "AutoCompactState",
+    "CompactAttachment",
+    "CompactionResult",
     "COMPACTABLE_TOOLS",
     "TIME_BASED_MC_CLEARED_MESSAGE",
     "auto_compact_if_needed",
+    "build_post_compact_messages",
     "build_compact_summary_message",
     "compact_conversation",
     "compact_messages",
+    "create_compact_boundary_message",
     "estimate_conversation_tokens",
     "estimate_message_tokens",
     "format_compact_summary",

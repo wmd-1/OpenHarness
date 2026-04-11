@@ -11,6 +11,7 @@ from openharness.api.usage import UsageSnapshot
 from openharness.engine.messages import ConversationMessage, ImageBlock, TextBlock, ToolUseBlock
 from openharness.hooks import HookEvent
 from openharness.services import (
+    build_post_compact_messages,
     compact_conversation,
     compact_messages,
     estimate_conversation_tokens,
@@ -91,8 +92,10 @@ def test_try_session_memory_compaction_reduces_long_history():
     result = try_session_memory_compaction(messages)
 
     assert result is not None
-    assert len(result) < len(messages)
-    assert "Session memory summary" in result[0].text
+    rebuilt = build_post_compact_messages(result)
+    assert len(rebuilt) < len(messages)
+    assert rebuilt[0].text.startswith("[Compact boundary marker]")
+    assert any("Session memory summary" in message.text for message in rebuilt)
 
 
 def test_try_context_collapse_trims_oversized_messages():
@@ -131,7 +134,9 @@ async def test_compact_conversation_retries_after_incomplete_response():
         model="claude-test",
     )
 
-    assert compacted[0].text.startswith("This session is being continued")
+    rebuilt = build_post_compact_messages(compacted)
+    assert rebuilt[0].text.startswith("[Compact boundary marker]")
+    assert any(message.text.startswith("This session is being continued") for message in rebuilt)
 
 
 @pytest.mark.asyncio
@@ -166,29 +171,95 @@ async def test_compact_conversation_runs_hooks_and_preserves_carryover_state(tmp
         carryover_metadata={
             "permission_mode": "plan",
             "session_id": "sess123",
+            "task_focus_state": {
+                "goal": "Confirm issue #98 and fix the logger formatting bug",
+                "recent_goals": [
+                    "Look into issue #98",
+                    "Confirm issue #98 and fix the logger formatting bug",
+                ],
+                "active_artifacts": [str(image_path), "src/openharness/channels/impl/matrix.py:398"],
+                "verified_state": ["Issue #98 is about logger placeholder formatting"],
+                "next_step": "Patch the logger formatting and rerun focused tests",
+            },
             "read_file_state": [
                 {
                     "path": str(image_path),
                     "span": "lines 1-20",
                     "preview": "1\tPNG header",
+                    "timestamp": 123.0,
                 }
             ],
             "invoked_skills": ["pikastream-video-meeting"],
             "async_agent_state": ["Spawned async agent [task_id=task_123]"],
+            "recent_work_log": ["Ran pytest -q tests/test_compact.py [41 passed]"],
+            "recent_verified_work": [
+                "Issue #98 is about logger placeholder formatting",
+                "matrix.py still contains mixed {} / %s logging",
+            ],
             "compact_last": {"checkpoint": "query_auto_triggered", "token_count": 12345},
         },
     )
 
     assert [event for event, _payload in hook_executor.events] == [HookEvent.PRE_COMPACT, HookEvent.POST_COMPACT]
-    assert compacted[0].text.startswith("This session is being continued")
-    assert "Carry-over context preserved after compaction" in compacted[1].text
-    assert "Plan mode is still active" in compacted[1].text
-    assert str(image_path) in compacted[1].text
-    assert "read_file" in compacted[1].text
-    assert "Recently read files" in compacted[1].text
-    assert "Skills invoked earlier" in compacted[1].text
-    assert "Async agent / background task state" in compacted[1].text
-    assert "Last compact checkpoint" in compacted[1].text
+    rebuilt = build_post_compact_messages(compacted)
+    joined = "\n\n".join(message.text for message in rebuilt)
+    assert rebuilt[0].text.startswith("[Compact boundary marker]")
+    assert any(message.text.startswith("This session is being continued") for message in rebuilt)
+    assert "[Compact attachment: task_focus]" in joined
+    assert "Current working focus" in joined
+    assert "logger formatting bug" in joined
+    assert "[Compact attachment: recent_verified_work]" in joined
+    assert "Issue #98 is about logger placeholder formatting" in joined
+    assert "[Compact attachment: plan]" in joined
+    assert "Plan mode is still active" in joined
+    assert str(image_path) in joined
+    assert "[Compact attachment: recent_files]" in joined
+    assert "Recently read files" in joined
+    assert "[Compact attachment: invoked_skills]" in joined
+    assert "[Compact attachment: async_agents]" in joined
+    assert "[Compact attachment: recent_work_log]" in joined
+    assert "41 passed" in joined
+
+
+@pytest.mark.asyncio
+async def test_compact_post_messages_keep_boundary_summary_recent_then_attachments():
+    messages = [
+        ConversationMessage(role="user", content=[TextBlock(text="first")]),
+        ConversationMessage(role="assistant", content=[TextBlock(text="second")]),
+        ConversationMessage(role="user", content=[TextBlock(text="third")]),
+        ConversationMessage(role="assistant", content=[TextBlock(text="fourth")]),
+        ConversationMessage(role="user", content=[TextBlock(text="fifth")]),
+        ConversationMessage(role="assistant", content=[TextBlock(text="sixth")]),
+        ConversationMessage(role="user", content=[TextBlock(text="seventh")]),
+    ]
+
+    compacted = await compact_conversation(
+        messages,
+        api_client=_CompactApiClient(["<summary>condensed</summary>"]),
+        model="claude-test",
+        preserve_recent=2,
+        carryover_metadata={
+            "task_focus_state": {
+                "goal": "Stabilize compact carry-over",
+                "recent_goals": ["Stabilize compact carry-over"],
+                "active_artifacts": ["/tmp/demo.py"],
+                "verified_state": ["Focused compact test fixture prepared"],
+                "next_step": "Run the focused compact tests",
+            },
+            "read_file_state": [{"path": "/tmp/demo.py", "span": "lines 1-20", "preview": "print('hi')"}],
+            "recent_work_log": ["Ran pytest -q tests/test_services/test_compact.py [ok]"],
+            "recent_verified_work": ["Focused compact test fixture prepared"],
+        },
+    )
+
+    rebuilt = build_post_compact_messages(compacted)
+
+    assert rebuilt[0].text.startswith("[Compact boundary marker]")
+    assert rebuilt[1].text.startswith("This session is being continued")
+    assert rebuilt[2].text == "sixth"
+    assert rebuilt[3].text == "seventh"
+    assert rebuilt[4].text.startswith("[Compact attachment:")
+    assert any("[Compact attachment: task_focus]" in message.text for message in rebuilt)
 
 
 @pytest.mark.asyncio
@@ -216,7 +287,7 @@ async def test_auto_compact_records_richer_checkpoint_metadata(monkeypatch):
     )
 
     assert was_compacted is True
-    assert result[0].text.startswith("This session is being continued")
+    assert result[0].text.startswith("[Compact boundary marker]")
     checkpoints = metadata.get("compact_checkpoints")
     assert isinstance(checkpoints, list)
     checkpoint_names = [entry["checkpoint"] for entry in checkpoints]

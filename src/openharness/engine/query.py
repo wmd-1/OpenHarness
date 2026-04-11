@@ -45,6 +45,10 @@ AskUserPrompt = Callable[[str], Awaitable[str]]
 MAX_TRACKED_READ_FILES = 6
 MAX_TRACKED_SKILLS = 8
 MAX_TRACKED_ASYNC_AGENT_EVENTS = 8
+MAX_TRACKED_WORK_LOG = 10
+MAX_TRACKED_USER_GOALS = 5
+MAX_TRACKED_ACTIVE_ARTIFACTS = 8
+MAX_TRACKED_VERIFIED_WORK = 10
 
 
 def _is_prompt_too_long_error(exc: Exception) -> bool:
@@ -89,6 +93,94 @@ class QueryContext:
     tool_metadata: dict[str, object] | None = None
 
 
+def _append_capped_unique(bucket: list[Any], value: Any, *, limit: int) -> None:
+    if value in bucket:
+        bucket.remove(value)
+    bucket.append(value)
+    if len(bucket) > limit:
+        del bucket[:-limit]
+
+
+def _task_focus_state(tool_metadata: dict[str, object] | None) -> dict[str, object]:
+    if tool_metadata is None:
+        return {}
+    value = tool_metadata.setdefault(
+        "task_focus_state",
+        {
+            "goal": "",
+            "recent_goals": [],
+            "active_artifacts": [],
+            "verified_state": [],
+            "next_step": "",
+        },
+    )
+    if isinstance(value, dict):
+        value.setdefault("goal", "")
+        value.setdefault("recent_goals", [])
+        value.setdefault("active_artifacts", [])
+        value.setdefault("verified_state", [])
+        value.setdefault("next_step", "")
+        return value
+    replacement = {
+        "goal": "",
+        "recent_goals": [],
+        "active_artifacts": [],
+        "verified_state": [],
+        "next_step": "",
+    }
+    tool_metadata["task_focus_state"] = replacement
+    return replacement
+
+
+def _summarize_focus_text(text: str) -> str:
+    normalized = " ".join(text.split())
+    if not normalized:
+        return ""
+    return normalized[:240]
+
+
+def remember_user_goal(
+    tool_metadata: dict[str, object] | None,
+    prompt: str,
+) -> None:
+    state = _task_focus_state(tool_metadata)
+    summary = _summarize_focus_text(prompt)
+    if not summary:
+        return
+    recent_goals = state.setdefault("recent_goals", [])
+    if isinstance(recent_goals, list):
+        _append_capped_unique(recent_goals, summary, limit=MAX_TRACKED_USER_GOALS)
+    state["goal"] = summary
+
+
+def _remember_active_artifact(
+    tool_metadata: dict[str, object] | None,
+    artifact: str,
+) -> None:
+    normalized = artifact.strip()
+    if not normalized:
+        return
+    state = _task_focus_state(tool_metadata)
+    artifacts = state.setdefault("active_artifacts", [])
+    if isinstance(artifacts, list):
+        _append_capped_unique(artifacts, normalized[:240], limit=MAX_TRACKED_ACTIVE_ARTIFACTS)
+
+
+def _remember_verified_work(
+    tool_metadata: dict[str, object] | None,
+    entry: str,
+) -> None:
+    normalized = entry.strip()
+    if not normalized:
+        return
+    bucket = _tool_metadata_bucket(tool_metadata, "recent_verified_work")
+    _append_capped_unique(bucket, normalized[:320], limit=MAX_TRACKED_VERIFIED_WORK)
+    state = _task_focus_state(tool_metadata)
+    verified_state = state.setdefault("verified_state", [])
+    if isinstance(verified_state, list):
+        _append_capped_unique(verified_state, normalized[:320], limit=MAX_TRACKED_VERIFIED_WORK)
+
+
 def _tool_metadata_bucket(
     tool_metadata: dict[str, object] | None,
     key: str,
@@ -113,15 +205,21 @@ def _remember_read_file(
 ) -> None:
     bucket = _tool_metadata_bucket(tool_metadata, "read_file_state")
     preview_lines = [line.strip() for line in output.splitlines()[:6] if line.strip()]
-    bucket.append(
-        {
-            "path": path,
-            "span": f"lines {offset + 1}-{offset + limit}",
-            "preview": " | ".join(preview_lines)[:320],
-        }
-    )
-    if len(bucket) > MAX_TRACKED_READ_FILES:
-        del bucket[:-MAX_TRACKED_READ_FILES]
+    entry = {
+        "path": path,
+        "span": f"lines {offset + 1}-{offset + limit}",
+        "preview": " | ".join(preview_lines)[:320],
+        "timestamp": time.time(),
+    }
+    if isinstance(bucket, list):
+        bucket[:] = [
+            existing
+            for existing in bucket
+            if not isinstance(existing, dict) or str(existing.get("path") or "") != path
+        ]
+        bucket.append(entry)
+        if len(bucket) > MAX_TRACKED_READ_FILES:
+            del bucket[:-MAX_TRACKED_READ_FILES]
 
 
 def _remember_skill_invocation(
@@ -163,6 +261,20 @@ def _remember_async_agent_activity(
         del bucket[:-MAX_TRACKED_ASYNC_AGENT_EVENTS]
 
 
+def _remember_work_log(
+    tool_metadata: dict[str, object] | None,
+    *,
+    entry: str,
+) -> None:
+    bucket = _tool_metadata_bucket(tool_metadata, "recent_work_log")
+    normalized = entry.strip()
+    if not normalized:
+        return
+    bucket.append(normalized[:320])
+    if len(bucket) > MAX_TRACKED_WORK_LOG:
+        del bucket[:-MAX_TRACKED_WORK_LOG]
+
+
 def _update_plan_mode(tool_metadata: dict[str, object] | None, mode: str) -> None:
     if tool_metadata is None:
         return
@@ -180,6 +292,8 @@ def _record_tool_carryover(
 ) -> None:
     if is_error:
         return
+    if resolved_file_path is not None:
+        _remember_active_artifact(context.tool_metadata, resolved_file_path)
     if tool_name == "read_file" and resolved_file_path is not None:
         offset = int(tool_input.get("offset") or 0)
         limit = int(tool_input.get("limit") or 200)
@@ -190,11 +304,19 @@ def _record_tool_carryover(
             limit=limit,
             output=tool_output,
         )
+        _remember_verified_work(
+            context.tool_metadata,
+            f"Inspected file {resolved_file_path} (lines {offset + 1}-{offset + limit})",
+        )
     elif tool_name == "skill":
         _remember_skill_invocation(
             context.tool_metadata,
             skill_name=str(tool_input.get("name") or ""),
         )
+        skill_name = str(tool_input.get("name") or "").strip()
+        if skill_name:
+            _remember_active_artifact(context.tool_metadata, f"skill:{skill_name}")
+            _remember_verified_work(context.tool_metadata, f"Loaded skill {skill_name}")
     elif tool_name in {"agent", "send_message"}:
         _remember_async_agent_activity(
             context.tool_metadata,
@@ -202,10 +324,71 @@ def _record_tool_carryover(
             tool_input=tool_input,
             output=tool_output,
         )
+        description = str(tool_input.get("description") or tool_input.get("prompt") or tool_name).strip()
+        _remember_verified_work(
+            context.tool_metadata,
+            f"Confirmed async-agent activity via {tool_name}: {description[:180]}",
+        )
     elif tool_name == "enter_plan_mode":
         _update_plan_mode(context.tool_metadata, "plan")
     elif tool_name == "exit_plan_mode":
         _update_plan_mode(context.tool_metadata, "default")
+    elif tool_name == "web_fetch":
+        url = str(tool_input.get("url") or "").strip()
+        if url:
+            _remember_active_artifact(context.tool_metadata, url)
+            _remember_verified_work(context.tool_metadata, f"Fetched remote content from {url}")
+    elif tool_name == "web_search":
+        query = str(tool_input.get("query") or "").strip()
+        if query:
+            _remember_verified_work(context.tool_metadata, f"Ran web search for {query[:180]}")
+    elif tool_name == "glob":
+        pattern = str(tool_input.get("pattern") or "").strip()
+        if pattern:
+            _remember_verified_work(context.tool_metadata, f"Expanded glob pattern {pattern[:180]}")
+    elif tool_name == "grep":
+        pattern = str(tool_input.get("pattern") or "").strip()
+        if pattern:
+            _remember_verified_work(context.tool_metadata, f"Checked repository matches for grep pattern {pattern[:180]}")
+    elif tool_name == "bash":
+        command = str(tool_input.get("command") or "").strip()
+        summary = tool_output.splitlines()[0].strip() if tool_output.strip() else "no output"
+        _remember_verified_work(
+            context.tool_metadata,
+            f"Ran bash command {command[:160]} [{summary[:120]}]",
+        )
+    if tool_name == "read_file" and resolved_file_path is not None:
+        _remember_work_log(
+            context.tool_metadata,
+            entry=f"Read file {resolved_file_path}",
+        )
+    elif tool_name == "bash":
+        command = str(tool_input.get("command") or "").strip()
+        summary = tool_output.splitlines()[0].strip() if tool_output.strip() else "no output"
+        _remember_work_log(
+            context.tool_metadata,
+            entry=f"Ran bash: {command[:160]} [{summary[:120]}]",
+        )
+    elif tool_name == "grep":
+        pattern = str(tool_input.get("pattern") or "").strip()
+        _remember_work_log(
+            context.tool_metadata,
+            entry=f"Searched with grep pattern={pattern[:160]}",
+        )
+    elif tool_name == "skill":
+        _remember_work_log(
+            context.tool_metadata,
+            entry=f"Loaded skill {str(tool_input.get('name') or '').strip()}",
+        )
+    elif tool_name in {"agent", "send_message"}:
+        _remember_work_log(
+            context.tool_metadata,
+            entry=f"Async agent action via {tool_name}",
+        )
+    elif tool_name == "enter_plan_mode":
+        _remember_work_log(context.tool_metadata, entry="Entered plan mode")
+    elif tool_name == "exit_plan_mode":
+        _remember_work_log(context.tool_metadata, entry="Exited plan mode")
 
 
 async def run_query(
@@ -323,8 +506,16 @@ async def run_query(
         if final_message is None:
             raise RuntimeError("Model stream finished without a final message")
 
+        coordinator_context_message: ConversationMessage | None = None
+        if context.system_prompt.startswith("You are a **coordinator**."):
+            if messages and messages[-1].role == "user" and messages[-1].text.startswith("# Coordinator User Context"):
+                coordinator_context_message = messages.pop()
+
         messages.append(final_message)
         yield AssistantTurnComplete(message=final_message, usage=usage), usage
+
+        if coordinator_context_message is not None:
+            messages.append(coordinator_context_message)
 
         if not final_message.tool_uses:
             return

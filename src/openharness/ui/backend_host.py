@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from openharness.api.client import SupportsStreamingMessages
 from openharness.auth.manager import AuthManager
-from openharness.config.settings import CLAUDE_MODEL_ALIAS_OPTIONS, display_model_setting
+from openharness.config.settings import CLAUDE_MODEL_ALIAS_OPTIONS, resolve_model_setting
 from openharness.bridge import get_bridge_manager
 from openharness.themes import list_themes
 from openharness.engine.stream_events import (
@@ -54,6 +54,7 @@ class BackendHostConfig:
     api_client: SupportsStreamingMessages | None = None
     cwd: str | None = None
     restore_messages: list[dict] | None = None
+    restore_tool_metadata: dict[str, object] | None = None
     enforce_max_turns: bool = True
     permission_mode: str | None = None
     session_backend: SessionBackend | None = None
@@ -89,6 +90,7 @@ class ReactBackendHost:
             api_client=self._config.api_client,
             cwd=self._config.cwd,
             restore_messages=self._config.restore_messages,
+            restore_tool_metadata=self._config.restore_tool_metadata,
             permission_prompt=self._ask_permission,
             ask_user_prompt=self._ask_question,
             enforce_max_turns=self._config.enforce_max_turns,
@@ -403,7 +405,7 @@ class ReactBackendHost:
         settings = self._bundle.current_settings()
         state = self._bundle.app_state.get()
         _, active_profile = settings.resolve_profile()
-        current_model = display_model_setting(active_profile)
+        current_model = settings.model
 
         if command == "provider":
             statuses = AuthManager(settings).get_profile_statuses()
@@ -612,12 +614,14 @@ class ReactBackendHost:
             ]
         provider_name = provider.lower()
         if provider_name in {"anthropic", "anthropic_claude"}:
+            resolved_current = resolve_model_setting(current_model, provider_name)
             return [
                 {
                     "value": value,
                     "label": label,
                     "description": description,
-                    "active": value == current_model,
+                    "active": value == current_model
+                    or resolve_model_setting(value, provider_name) == resolved_current,
                 }
                 for value, label, description in CLAUDE_MODEL_ALIAS_OPTIONS
             ]
@@ -738,6 +742,7 @@ async def run_backend_host(
     cwd: str | None = None,
     api_client: SupportsStreamingMessages | None = None,
     restore_messages: list[dict] | None = None,
+    restore_tool_metadata: dict[str, object] | None = None,
     enforce_max_turns: bool = True,
     permission_mode: str | None = None,
     session_backend: SessionBackend | None = None,
@@ -759,6 +764,7 @@ async def run_backend_host(
             api_client=api_client,
             cwd=cwd,
             restore_messages=restore_messages,
+            restore_tool_metadata=restore_tool_metadata,
             enforce_max_turns=enforce_max_turns,
             permission_mode=permission_mode,
             session_backend=session_backend,
