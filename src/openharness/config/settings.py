@@ -189,6 +189,14 @@ def default_provider_profiles() -> dict[str, ProviderProfile]:
             default_model="kimi-k2.5",
             base_url="https://api.moonshot.cn/v1",
         ),
+        "gemini": ProviderProfile(
+            label="Google Gemini",
+            provider="gemini",
+            api_format="openai",
+            auth_source="gemini_api_key",
+            default_model="gemini-2.5-flash",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        ),
     }
 
 
@@ -275,6 +283,7 @@ def auth_source_provider_name(auth_source: str) -> str:
         "bedrock_api_key": "bedrock",
         "vertex_api_key": "vertex",
         "moonshot_api_key": "moonshot",
+        "gemini_api_key": "gemini",
     }
     return mapping.get(auth_source, auth_source)
 
@@ -312,6 +321,8 @@ def default_auth_source_for_provider(provider: str, api_format: str | None = Non
         return "vertex_api_key"
     if provider == "moonshot":
         return "moonshot_api_key"
+    if provider == "gemini":
+        return "gemini_api_key"
     if provider == "openai" or api_format == "openai":
         return "openai_api_key"
     return "anthropic_api_key"
