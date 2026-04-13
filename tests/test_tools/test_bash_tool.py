@@ -92,12 +92,32 @@ async def test_bash_tool_timeout_returns_partial_output_and_interactive_hint(mon
 
     assert result.is_error is True
     assert "Command timed out after 1 seconds." in result.output
-    assert "Partial output:" in result.output
-    assert "Creating a new Next.js app" in result.output
-    assert "Would you like to use Turbopack?" in result.output
     assert "This command appears to require interactive input." in result.output
     assert result.metadata["timed_out"] is True
     assert process.killed is True
+
+
+@pytest.mark.asyncio
+async def test_bash_tool_timeout_returns_partial_output_for_real_command(tmp_path: Path):
+    result = await BashTool().execute(
+        BashToolInput(
+            command=(
+                "python -u -c \"print('Creating a new Next.js app in /tmp/coolblog.'); "
+                "print('Would you like to use Turbopack?'); "
+                "import time; time.sleep(5)\""
+            ),
+            timeout_seconds=1,
+        ),
+        ToolExecutionContext(cwd=tmp_path),
+    )
+
+    assert result.is_error is True
+    assert "Command timed out after 1 seconds." in result.output
+    assert "Partial output:" in result.output
+    assert "Creating a new Next.js app in /tmp/coolblog." in result.output
+    assert "Would you like to use Turbopack?" in result.output
+    assert "This command appears to require interactive input." in result.output
+    assert result.metadata["timed_out"] is True
 
 
 @pytest.mark.asyncio
