@@ -558,6 +558,19 @@ def create_default_command_registry(
 
     async def _agents_handler(args: str, context: CommandContext) -> CommandResult:
         tokens = args.split(maxsplit=1)
+        guide = (
+            "Subagent guide:\n"
+            "- Ask the model to delegate with the `agent` tool when the task needs background work or parallel investigation.\n"
+            '- The usual worker shape is subagent_type="worker".\n'
+            "- /agents lists known worker tasks.\n"
+            "- /agents show TASK_ID shows one worker's output and metadata.\n"
+            "- send_message(task_id=..., message=...) can continue a spawned worker.\n"
+            "- task_output(task_id=...) reads the worker's latest output."
+        )
+        if tokens and tokens[0] in {"help", "usage"}:
+            return CommandResult(
+                message=guide
+            )
         if tokens and tokens[0] == "show" and len(tokens) == 2:
             task = get_task_manager().get_task(tokens[1])
             if task is None or task.type not in {"local_agent", "remote_agent", "in_process_teammate"}:
@@ -576,7 +589,9 @@ def create_default_command_registry(
             if task.type in {"local_agent", "remote_agent", "in_process_teammate"}
         ]
         if not tasks:
-            return CommandResult(message="No active or recorded agents.")
+            return CommandResult(
+                message=f"No active or recorded agents. Run /agents help for usage.\n\n{guide}"
+            )
         lines = [
             f"{task.id} {task.type} {task.status} {task.description}"
             for task in tasks
@@ -1570,6 +1585,7 @@ def create_default_command_registry(
     registry.register(SlashCommand("release-notes", "Show recent OpenHarness release notes", _release_notes_handler))
     registry.register(SlashCommand("upgrade", "Show upgrade instructions", _upgrade_handler))
     registry.register(SlashCommand("agents", "List or inspect agent and teammate tasks", _agents_handler))
+    registry.register(SlashCommand("subagents", "Show subagent usage and inspect worker tasks", _agents_handler))
     registry.register(SlashCommand("tasks", "Manage background tasks", _tasks_handler))
 
     for plugin_command in plugin_commands or ():
