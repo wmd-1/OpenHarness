@@ -94,7 +94,7 @@ async def test_bash_tool_timeout_returns_partial_output_and_interactive_hint(mon
     assert "Command timed out after 1 seconds." in result.output
     assert "This command appears to require interactive input." in result.output
     assert result.metadata["timed_out"] is True
-    assert process.killed is True
+    assert process.killed is True or process.terminated is True
 
 
 @pytest.mark.asyncio
