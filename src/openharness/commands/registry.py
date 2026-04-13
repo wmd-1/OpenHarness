@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
+import re
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -377,9 +378,11 @@ def create_default_command_registry(
             return CommandResult(message="\n".join(path.name for path in memory_files))
         if action == "show" and rest:
             memory_dir = get_project_memory_dir(context.cwd)
-            path = _resolve_memory_entry_path(memory_dir, rest)
-            if path is None:
+            path, invalid = _resolve_memory_entry_path(memory_dir, rest)
+            if invalid:
                 return CommandResult(message="Memory entry path must stay within the project memory directory.")
+            if path is None:
+                return CommandResult(message=f"Memory entry not found: {rest}")
             if not path.exists():
                 return CommandResult(message=f"Memory entry not found: {rest}")
             return CommandResult(message=path.read_text(encoding="utf-8"))
@@ -1638,20 +1641,31 @@ def create_default_command_registry(
     return registry
 
 
-def _resolve_memory_entry_path(memory_dir: Path, candidate: str) -> Path | None:
+def _resolve_memory_entry_path(memory_dir: Path, candidate: str) -> tuple[Path | None, bool]:
     """Resolve a memory entry path while enforcing containment under ``memory_dir``."""
 
     base = memory_dir.resolve()
-    resolved = _resolve_memory_candidate(base, candidate)
+    resolved, invalid = _resolve_memory_candidate(base, candidate)
+    if invalid:
+        return None, True
     if resolved is not None and resolved.exists():
-        return resolved
-    fallback = _resolve_memory_candidate(base, f"{candidate}.md")
-    if fallback is not None:
-        return fallback
-    return None
+        return resolved, False
+    fallback, invalid = _resolve_memory_candidate(base, f"{candidate}.md")
+    if invalid:
+        return None, True
+    if fallback is not None and fallback.exists():
+        return fallback, False
+    slug = re.sub(r"[^a-zA-Z0-9]+", "_", candidate.strip().lower()).strip("_")
+    if slug and slug != candidate:
+        slugged, invalid = _resolve_memory_candidate(base, f"{slug}.md")
+        if invalid:
+            return None, True
+        if slugged is not None and slugged.exists():
+            return slugged, False
+    return None, False
 
 
-def _resolve_memory_candidate(memory_dir: Path, candidate: str) -> Path | None:
+def _resolve_memory_candidate(memory_dir: Path, candidate: str) -> tuple[Path | None, bool]:
     path = Path(candidate).expanduser()
     if not path.is_absolute():
         path = memory_dir / path
@@ -1659,5 +1673,5 @@ def _resolve_memory_candidate(memory_dir: Path, candidate: str) -> Path | None:
     try:
         resolved.relative_to(memory_dir)
     except ValueError:
-        return None
-    return resolved
+        return None, True
+    return resolved, False
