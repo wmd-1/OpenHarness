@@ -115,7 +115,7 @@ async def _drain_available_output(
 
 
 def _format_output(output_buffer: bytearray) -> str:
-    text = output_buffer.decode("utf-8", errors="replace").strip()
+    text = output_buffer.decode("utf-8", errors="replace").replace("\r\n", "\n").strip()
     if not text:
         return "(no output)"
     if len(text) > 12000:

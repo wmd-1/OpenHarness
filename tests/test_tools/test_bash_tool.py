@@ -22,7 +22,17 @@ class _FakeStdout:
                 chunks = self._chunks[:]
                 self._chunks.clear()
                 return b"".join(chunks)
-            return self._chunks.pop(0)
+            total = bytearray()
+            while self._chunks and (len(total) < _size):
+                next_chunk = self._chunks[0]
+                remaining = _size - len(total)
+                if len(next_chunk) <= remaining:
+                    total.extend(self._chunks.pop(0))
+                    continue
+                total.extend(next_chunk[:remaining])
+                self._chunks[0] = next_chunk[remaining:]
+                break
+            return bytes(total)
         if self._process is not None and self._process.returncode is not None:
             return b""
         if self._sleep_forever:
