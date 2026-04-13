@@ -12,7 +12,7 @@ import os
 import string
 
 from openharness.channels.bus.events import InboundMessage
-from openharness.commands import CommandContext
+from openharness.commands import CommandContext, CommandResult
 from openharness.engine.messages import ConversationMessage, ImageBlock, TextBlock
 from openharness.engine.query import MaxTurnsExceeded
 from openharness.engine.stream_events import (
@@ -27,6 +27,7 @@ from openharness.engine.stream_events import (
 from openharness.prompts import build_runtime_system_prompt
 from openharness.ui.runtime import RuntimeBundle, _last_user_text, build_runtime, close_runtime, start_runtime
 
+from ohmo.gateway.config import load_gateway_config
 from ohmo.prompts import build_ohmo_system_prompt
 from ohmo.session_storage import OhmoSessionBackend
 from ohmo.workspace import get_plugins_dir, get_skills_dir, initialize_workspace
@@ -81,12 +82,25 @@ class OhmoSessionRuntimePool:
         self._model = model
         self._max_turns = max_turns
         self._workspace = initialize_workspace(workspace)
+        self._gateway_config = load_gateway_config(self._workspace)
         self._session_backend = OhmoSessionBackend(self._workspace)
         self._bundles: dict[str, RuntimeBundle] = {}
 
     @property
     def active_sessions(self) -> int:
         return len(self._bundles)
+
+    def _remote_admin_allowed(self, command) -> bool:
+        if not getattr(command, "remote_admin_opt_in", False):
+            return False
+        if not self._gateway_config.allow_remote_admin_commands:
+            return False
+        allowed = {
+            str(name).strip().lower()
+            for name in self._gateway_config.allowed_remote_admin_commands
+            if str(name).strip()
+        }
+        return command.name.lower() in allowed
 
     async def get_bundle(self, session_key: str, latest_user_prompt: str | None = None) -> RuntimeBundle:
         """Return an existing bundle or create a new one."""
@@ -149,6 +163,29 @@ class OhmoSessionRuntimePool:
         parsed = bundle.commands.lookup(user_prompt)
         if parsed is not None and not message.media:
             command, args = parsed
+            remote_allowed = getattr(command, "remote_invocable", True)
+            if not remote_allowed and self._remote_admin_allowed(command):
+                remote_allowed = True
+                logger.warning(
+                    "ohmo gateway remote administrative command accepted channel=%s chat_id=%s sender_id=%s command=%s",
+                    message.channel,
+                    message.chat_id,
+                    message.sender_id,
+                    command.name,
+                )
+            if not remote_allowed:
+                result = CommandResult(
+                    message=f"/{command.name} is only available in the local OpenHarness UI."
+                )
+                async for update in self._stream_command_result(
+                    bundle=bundle,
+                    message=message,
+                    session_key=session_key,
+                    user_prompt=user_prompt,
+                    result=result,
+                ):
+                    yield update
+                return
             result = await command.handler(
                 args,
                 CommandContext(
