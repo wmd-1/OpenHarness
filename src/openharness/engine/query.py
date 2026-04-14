@@ -515,6 +515,16 @@ async def run_query(
             if messages and messages[-1].role == "user" and messages[-1].text.startswith("# Coordinator User Context"):
                 coordinator_context_message = messages.pop()
 
+        if final_message.role == "assistant" and final_message.is_effectively_empty():
+            log.warning("dropping empty assistant message from provider response")
+            yield ErrorEvent(
+                message=(
+                    "Model returned an empty assistant message. "
+                    "The turn was ignored to keep the session healthy."
+                )
+            ), usage
+            return
+
         messages.append(final_message)
         yield AssistantTurnComplete(message=final_message, usage=usage), usage
 

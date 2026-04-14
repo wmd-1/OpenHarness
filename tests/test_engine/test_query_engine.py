@@ -18,6 +18,7 @@ from openharness.engine.stream_events import (
     AssistantTextDelta,
     AssistantTurnComplete,
     CompactProgressEvent,
+    ErrorEvent,
     StatusEvent,
     ToolExecutionCompleted,
     ToolExecutionStarted,
@@ -103,6 +104,16 @@ class PromptTooLongThenSuccessApiClient:
             return
         yield ApiMessageCompleteEvent(
             message=ConversationMessage(role="assistant", content=[TextBlock(text="after reactive compact")]),
+            usage=UsageSnapshot(input_tokens=1, output_tokens=1),
+            stop_reason=None,
+        )
+
+
+class EmptyAssistantApiClient:
+    async def stream_message(self, request):
+        del request
+        yield ApiMessageCompleteEvent(
+            message=ConversationMessage(role="assistant", content=[]),
             usage=UsageSnapshot(input_tokens=1, output_tokens=1),
             stop_reason=None,
         )
@@ -918,3 +929,22 @@ async def test_query_engine_synthesizes_tool_result_when_parallel_tool_raises(tm
 
     assert isinstance(events[-1], AssistantTurnComplete)
     assert events[-1].message.text == "Recovered from the failure."
+
+
+@pytest.mark.asyncio
+async def test_query_engine_drops_empty_assistant_messages(tmp_path: Path):
+    engine = QueryEngine(
+        api_client=EmptyAssistantApiClient(),
+        tool_registry=ToolRegistry(),
+        permission_checker=PermissionChecker(PermissionSettings(mode=PermissionMode.FULL_AUTO)),
+        cwd=tmp_path,
+        model="claude-test",
+        system_prompt="system",
+    )
+
+    events = [event async for event in engine.submit_message("hello")]
+
+    assert any(isinstance(event, ErrorEvent) for event in events)
+    assert not any(isinstance(event, AssistantTurnComplete) for event in events)
+    assert len(engine.messages) == 1
+    assert engine.messages[0].role == "user"
