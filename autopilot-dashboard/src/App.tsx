@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { HeroBackground } from "./components/HeroBackground";
 import { PipelineAnimation } from "./components/PipelineAnimation";
 import type { Snapshot, TaskCard, JournalEntry } from "./types";
-import { STATUS_LABELS, STATUS_COLORS } from "./types";
+import { STATUS_LABELS, STATUS_COLORS, KANBAN_GROUPS } from "./types";
 
 /* ── Helpers ─────────────────────────────────── */
 
@@ -43,7 +43,7 @@ function CardView({ card }: { card: TaskCard }) {
       <div className="card-meta">
         <span>{card.id}</span>
         <span className={`badge ${statusBadgeClass(card.status)}`}>
-          {card.score}
+          {STATUS_LABELS[card.status] || card.status}
         </span>
       </div>
       <h3>{card.title}</h3>
@@ -59,7 +59,7 @@ function CardView({ card }: { card: TaskCard }) {
       )}
       <div className="card-footer">
         <div>
-          updated {fmtAgo(card.updated_at)}
+          score {card.score} · updated {fmtAgo(card.updated_at)}
           {card.source_ref ? ` · ref ${card.source_ref}` : ""}
         </div>
         <div>{card.metadata?.last_note || "no status note yet"}</div>
@@ -74,20 +74,26 @@ function CardView({ card }: { card: TaskCard }) {
   );
 }
 
-/* ── Column Component ────────────────────────── */
+/* ── Grouped Column Component ────────────────── */
 
-function ColumnView({ status, cards }: { status: string; cards: TaskCard[] }) {
-  const color = STATUS_COLORS[status] || "#666";
+function GroupColumnView({ label, color, cards }: {
+  label: string;
+  color: string;
+  cards: TaskCard[];
+}) {
   return (
     <section className="column">
       <div className="column-header">
-        <h2 style={{ color }}>{STATUS_LABELS[status] || status}</h2>
+        <div className="column-title-row">
+          <span className="column-dot" style={{ background: color }} />
+          <h2>{label}</h2>
+        </div>
         <span className="column-count">{cards.length}</span>
       </div>
       <div className="cards">
         {cards.length > 0
           ? cards.map((card) => <CardView key={card.id} card={card} />)
-          : <div className="empty">No cards in this column.</div>
+          : <div className="empty">No cards.</div>
         }
       </div>
     </section>
@@ -162,11 +168,12 @@ export function App() {
   }
 
   const counts = snapshot.counts || {};
-  const order = snapshot.status_order || [];
   const normalizedFilter = filter.trim().toLowerCase();
 
-  const filteredColumns = order.map((status) => {
-    const cards = (snapshot.columns?.[status] || []).filter((card) => {
+  // Group cards into 4 kanban columns
+  const groupedColumns = KANBAN_GROUPS.map((group) => {
+    const allCards = group.statuses.flatMap((s) => snapshot.columns?.[s] || []);
+    const cards = allCards.filter((card) => {
       if (!normalizedFilter) return true;
       const haystack = [
         card.id, card.title, card.body, card.source_kind, card.source_ref,
@@ -174,8 +181,8 @@ export function App() {
       ].join(" ").toLowerCase();
       return haystack.includes(normalizedFilter);
     });
-    return { status, cards };
-  }).filter(({ cards }) => cards.length > 0 || !normalizedFilter);
+    return { ...group, cards };
+  });
 
   const inProgress = (counts.preparing || 0) + (counts.running || 0) +
     (counts.verifying || 0) + (counts.waiting_ci || 0) +
@@ -197,13 +204,11 @@ export function App() {
           <div className="hero-main">
             <div className="eyebrow">// AUTOPILOT_KANBAN</div>
             <h1>
-              {snapshot.repo_name || "OpenHarness"}<br />
+              OpenHarness<br />
               <span className="accent">SELF-EVOLUTION</span>
             </h1>
             <p className="hero-sub">
-              A static GitHub Pages view of the repo-local autopilot queue.
-              Cards come from ohmo requests, GitHub issues and PRs, and
-              claude-code alignment candidates.
+              Kanban for OpenHarness self-evolution.
             </p>
             <div className="focus-box">
               <div className="focus-label">// CURRENT_FOCUS</div>
@@ -229,24 +234,26 @@ export function App() {
         {/* ── Stats Bar ──────────────────── */}
         <section className="stats-bar">
           <div className="stat">
-            <div className="stat-label teal">QUEUED</div>
+            <div className="stat-label" style={{ color: "#64748b" }}>TO DO</div>
             <div className="stat-value">{counts.queued || 0}</div>
-            <div className="stat-sub">waiting</div>
+            <div className="stat-sub">queued + accepted</div>
           </div>
           <div className="stat">
-            <div className="stat-label orange">IN PROGRESS</div>
+            <div className="stat-label teal">IN PROGRESS</div>
             <div className="stat-value">{inProgress}</div>
             <div className="stat-sub">active pipeline</div>
           </div>
           <div className="stat">
-            <div className="stat-label teal">COMPLETED</div>
-            <div className="stat-value">{completed}</div>
-            <div className="stat-sub">merged + done</div>
+            <div className="stat-label" style={{ color: "#3b82f6" }}>IN REVIEW</div>
+            <div className="stat-value">
+              {(counts.verifying || 0) + (counts.pr_open || 0) + (counts.waiting_ci || 0)}
+            </div>
+            <div className="stat-sub">verify + PR + CI</div>
           </div>
           <div className="stat">
-            <div className="stat-label" style={{ color: "var(--error)" }}>FAILED</div>
-            <div className="stat-value">{failed}</div>
-            <div className="stat-sub">rejected + failed</div>
+            <div className="stat-label violet">DONE</div>
+            <div className="stat-value">{completed + failed}</div>
+            <div className="stat-sub">merged + completed + failed</div>
           </div>
         </section>
 
@@ -265,8 +272,13 @@ export function App() {
 
         {/* ── Kanban Board ───────────────── */}
         <section className="board">
-          {filteredColumns.map(({ status, cards }) => (
-            <ColumnView key={status} status={status} cards={cards} />
+          {groupedColumns.map((group) => (
+            <GroupColumnView
+              key={group.key}
+              label={group.label}
+              color={group.color}
+              cards={group.cards}
+            />
           ))}
         </section>
 

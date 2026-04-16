@@ -67,3 +67,18 @@ export const STATUS_COLORS: Record<string, string> = {
   rejected: "#ff4444",
   superseded: "#ffaa00",
 };
+
+/** Grouped kanban columns — vibe-kanban style */
+export interface KanbanGroup {
+  key: string;
+  label: string;
+  color: string;
+  statuses: string[];
+}
+
+export const KANBAN_GROUPS: KanbanGroup[] = [
+  { key: "todo",        label: "To Do",       color: "#64748b", statuses: ["queued", "accepted"] },
+  { key: "in_progress", label: "In Progress", color: "#00d4aa", statuses: ["preparing", "running", "repairing"] },
+  { key: "in_review",   label: "In Review",   color: "#3b82f6", statuses: ["verifying", "pr_open", "waiting_ci"] },
+  { key: "done",        label: "Done",        color: "#8b5cf6", statuses: ["completed", "merged", "failed", "rejected", "superseded"] },
+];
