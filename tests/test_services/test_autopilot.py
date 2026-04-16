@@ -119,7 +119,7 @@ def test_autopilot_export_dashboard_writes_static_site(tmp_path: Path) -> None:
     assert snapshot_path.exists()
     index_text = index_path.read_text(encoding="utf-8")
     snapshot_text = snapshot_path.read_text(encoding="utf-8")
-    assert "self-evolution board" in index_text
+    assert "Autopilot Kanban" in index_text
     assert "snapshot.json" in index_text
     assert "Build kanban page" in snapshot_text
     assert '"status_order"' in snapshot_text
