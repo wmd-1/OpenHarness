@@ -271,7 +271,7 @@ def create_default_command_registry(
         try:
             version = importlib.metadata.version("openharness")
         except importlib.metadata.PackageNotFoundError:
-            version = "0.1.6"
+            version = "0.1.7"
         return CommandResult(message=f"OpenHarness {version}")
 
     async def _context_handler(_: str, context: CommandContext) -> CommandResult:
@@ -1429,7 +1429,7 @@ def create_default_command_registry(
         try:
             version = importlib.metadata.version("openharness")
         except importlib.metadata.PackageNotFoundError:
-            version = "0.1.6"
+            version = "0.1.7"
         return CommandResult(
             message=(
                 f"Current version: {version}\n"

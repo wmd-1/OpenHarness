@@ -50,6 +50,14 @@ The format is based on Keep a Changelog, and this project currently tracks chang
 - README quick start now includes a one-command demo and clearer provider compatibility notes.
 - README provider compatibility section updated to include OpenAI-format providers.
 
+## [0.1.7] - 2026-04-18
+
+### Fixed
+
+- Install script now links `oh`, `ohmo`, and `openharness` into `~/.local/bin` instead of prepending the virtualenv `bin` directory to `PATH`, which avoids overriding Conda-managed shells while preserving global command discovery.
+- React TUI prompt now supports `Shift+Enter` for inserting a newline without submitting the current prompt.
+- React TUI busy-state animation is less error-prone on Windows terminals: the extra pseudo-animation line was removed, Windows now uses conservative ASCII spinner frames, and the spinner interval was slightly slowed to reduce flashing.
+
 ## [0.1.0] - 2026-04-01
 
 ### Added
