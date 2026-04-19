@@ -59,21 +59,21 @@ function MultilineTextInput({
 				return;
 			}
 
-			if (key.backspace || key.delete) {
-				if (key.delete) {
-					if (cursorOffset >= value.length) {
-						return;
-					}
-					const nextValue = value.slice(0, cursorOffset) + value.slice(cursorOffset + 1);
-					onChange(nextValue);
-					return;
-				}
-
+			if (key.backspace) {
 				if (cursorOffset === 0) {
 					return;
 				}
 				const nextValue = value.slice(0, cursorOffset - 1) + value.slice(cursorOffset);
 				setCursorOffset(cursorOffset - 1);
+				onChange(nextValue);
+				return;
+			}
+
+			if (key.delete) {
+				if (cursorOffset >= value.length) {
+					return;
+				}
+				const nextValue = value.slice(0, cursorOffset) + value.slice(cursorOffset + 1);
 				onChange(nextValue);
 				return;
 			}
