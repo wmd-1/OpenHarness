@@ -182,15 +182,18 @@ async def _drain_coordinator_async_agents(
     print_system,
     render_event,
 ) -> None:
+    engine = getattr(bundle, "engine", None)
+    if engine is None:
+        return
     while True:
-        pending = _pending_async_agent_entries(bundle.engine.tool_metadata)
+        pending = _pending_async_agent_entries(getattr(engine, "tool_metadata", None))
         if not pending:
             return
         if output_format == "text":
             await print_system(
                 f"Waiting for {len(pending)} background agent task(s) to finish..."
             )
-        completed = await _wait_for_completed_async_agent_entries(bundle.engine.tool_metadata)
+        completed = await _wait_for_completed_async_agent_entries(getattr(engine, "tool_metadata", None))
         notification_payload = _format_completed_task_notifications(completed)
         if not notification_payload.strip():
             return

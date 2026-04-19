@@ -80,7 +80,7 @@ async def test_bash_tool_preflight_short_circuits_interactive_scaffold_even_with
     async def fake_create_shell_subprocess(*args, **kwargs):
         return process
 
-    monkeypatch.setattr("openharness.tools.bash_tool.create_shell_subprocess", fake_create_shell_subprocess)
+    monkeypatch.setitem(BashTool.execute.__globals__, "create_shell_subprocess", fake_create_shell_subprocess)
 
     result = await BashTool().execute(
         BashToolInput(
@@ -144,7 +144,7 @@ async def test_bash_tool_collects_combined_output(monkeypatch, tmp_path: Path):
     async def fake_create_shell_subprocess(*args, **kwargs):
         return process
 
-    monkeypatch.setattr("openharness.tools.bash_tool.create_shell_subprocess", fake_create_shell_subprocess)
+    monkeypatch.setitem(BashTool.execute.__globals__, "create_shell_subprocess", fake_create_shell_subprocess)
 
     result = await BashTool().execute(
         BashToolInput(command="printf 'line one\\nline two\\n'"),
@@ -169,7 +169,7 @@ async def test_bash_tool_uses_devnull_stdin_for_non_interactive_shell(monkeypatc
         seen_kwargs.update(kwargs)
         return process
 
-    monkeypatch.setattr("openharness.tools.bash_tool.create_shell_subprocess", fake_create_shell_subprocess)
+    monkeypatch.setitem(BashTool.execute.__globals__, "create_shell_subprocess", fake_create_shell_subprocess)
 
     result = await BashTool().execute(
         BashToolInput(command="echo ok"),
