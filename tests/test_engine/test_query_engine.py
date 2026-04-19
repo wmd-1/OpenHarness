@@ -601,6 +601,170 @@ async def test_query_engine_respects_pre_tool_hook_blocks(tmp_path: Path):
     assert "no reading" in tool_results[0].output
 
 
+class _RecordingHookExecutor:
+    """Duck-typed hook executor that records every fired event + payload."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[HookEvent, dict]] = []
+
+    async def execute(self, event: HookEvent, payload: dict):
+        from openharness.hooks.types import AggregatedHookResult
+
+        self.calls.append((event, dict(payload)))
+        return AggregatedHookResult(results=[])
+
+
+@pytest.mark.asyncio
+async def test_user_prompt_submit_hook_fires(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("CLAUDE_CODE_COORDINATOR_MODE", raising=False)
+    recorder = _RecordingHookExecutor()
+    engine = QueryEngine(
+        api_client=StaticApiClient("done"),
+        tool_registry=create_default_tool_registry(),
+        permission_checker=PermissionChecker(PermissionSettings()),
+        cwd=tmp_path,
+        model="claude-test",
+        system_prompt="system",
+        hook_executor=recorder,  # type: ignore[arg-type]
+    )
+
+    _ = [event async for event in engine.submit_message("hello world")]
+
+    user_prompt_calls = [c for c in recorder.calls if c[0] == HookEvent.USER_PROMPT_SUBMIT]
+    assert len(user_prompt_calls) == 1
+    assert user_prompt_calls[0][1]["event"] == "user_prompt_submit"
+    assert user_prompt_calls[0][1]["prompt"] == "hello world"
+
+
+@pytest.mark.asyncio
+async def test_stop_hook_fires_on_clean_turn(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("CLAUDE_CODE_COORDINATOR_MODE", raising=False)
+    recorder = _RecordingHookExecutor()
+    engine = QueryEngine(
+        api_client=StaticApiClient("all done"),
+        tool_registry=create_default_tool_registry(),
+        permission_checker=PermissionChecker(PermissionSettings()),
+        cwd=tmp_path,
+        model="claude-test",
+        system_prompt="system",
+        hook_executor=recorder,  # type: ignore[arg-type]
+    )
+
+    _ = [event async for event in engine.submit_message("hi")]
+
+    stop_calls = [c for c in recorder.calls if c[0] == HookEvent.STOP]
+    assert len(stop_calls) == 1
+    assert stop_calls[0][1]["event"] == "stop"
+    assert stop_calls[0][1]["stop_reason"] == "tool_uses_empty"
+
+
+@pytest.mark.asyncio
+async def test_stop_hook_does_not_fire_when_tool_uses_present(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("CLAUDE_CODE_COORDINATOR_MODE", raising=False)
+    sample = tmp_path / "hello.txt"
+    sample.write_text("alpha\n", encoding="utf-8")
+    recorder = _RecordingHookExecutor()
+    engine = QueryEngine(
+        api_client=FakeApiClient(
+            [
+                _FakeResponse(
+                    message=ConversationMessage(
+                        role="assistant",
+                        content=[
+                            ToolUseBlock(
+                                id="toolu_1",
+                                name="read_file",
+                                input={"path": str(sample), "offset": 0, "limit": 1},
+                            )
+                        ],
+                    ),
+                    usage=UsageSnapshot(input_tokens=1, output_tokens=1),
+                ),
+                _FakeResponse(
+                    message=ConversationMessage(
+                        role="assistant",
+                        content=[TextBlock(text="wrapped up")],
+                    ),
+                    usage=UsageSnapshot(input_tokens=1, output_tokens=1),
+                ),
+            ]
+        ),
+        tool_registry=create_default_tool_registry(),
+        permission_checker=PermissionChecker(PermissionSettings()),
+        cwd=tmp_path,
+        model="claude-test",
+        system_prompt="system",
+        hook_executor=recorder,  # type: ignore[arg-type]
+    )
+
+    _ = [event async for event in engine.submit_message("read the file")]
+
+    stop_calls = [c for c in recorder.calls if c[0] == HookEvent.STOP]
+    # STOP fires exactly once — at the end of the second turn (no tool_uses),
+    # NOT after the first turn that contained a tool_use.
+    assert len(stop_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_notification_hook_fires_on_permission_prompt(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("CLAUDE_CODE_COORDINATOR_MODE", raising=False)
+    recorder = _RecordingHookExecutor()
+    prompt_tool_calls: list[tuple[str, str]] = []
+
+    async def _permission_prompt(tool_name: str, reason: str) -> bool:
+        prompt_tool_calls.append((tool_name, reason))
+        # Assert the NOTIFICATION hook fired before this callback was invoked.
+        notif = [c for c in recorder.calls if c[0] == HookEvent.NOTIFICATION]
+        assert notif, "notification hook must fire before permission prompt"
+        return False  # deny — keeps the turn short
+
+    engine = QueryEngine(
+        api_client=FakeApiClient(
+            [
+                _FakeResponse(
+                    message=ConversationMessage(
+                        role="assistant",
+                        content=[
+                            ToolUseBlock(
+                                id="toolu_bash_1",
+                                name="bash",
+                                input={"command": "echo hi"},
+                            )
+                        ],
+                    ),
+                    usage=UsageSnapshot(input_tokens=1, output_tokens=1),
+                ),
+                _FakeResponse(
+                    message=ConversationMessage(
+                        role="assistant",
+                        content=[TextBlock(text="denied")],
+                    ),
+                    usage=UsageSnapshot(input_tokens=1, output_tokens=1),
+                ),
+            ]
+        ),
+        tool_registry=create_default_tool_registry(),
+        permission_checker=PermissionChecker(PermissionSettings(mode=PermissionMode.DEFAULT)),
+        cwd=tmp_path,
+        model="claude-test",
+        system_prompt="system",
+        permission_prompt=_permission_prompt,
+        hook_executor=recorder,  # type: ignore[arg-type]
+    )
+
+    _ = [event async for event in engine.submit_message("run something")]
+
+    notification_calls = [c for c in recorder.calls if c[0] == HookEvent.NOTIFICATION]
+    assert len(notification_calls) == 1
+    payload = notification_calls[0][1]
+    assert payload["event"] == "notification"
+    assert payload["notification_type"] == "permission_prompt"
+    assert payload["tool_name"] == "bash"
+    # The permission prompt callback was invoked (confirms the hook fired on the
+    # correct branch, not on the silently-denied branch).
+    assert prompt_tool_calls
+
+
 def _tool_context(tmp_path: Path, registry: ToolRegistry, settings: PermissionSettings) -> QueryContext:
     return QueryContext(
         api_client=_NoopApiClient(),
