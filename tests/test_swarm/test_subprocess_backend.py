@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from openharness.tasks.manager import BackgroundTaskManager
 from openharness.tasks.types import TaskRecord
 from openharness.swarm.subprocess_backend import SubprocessBackend
 from openharness.swarm.types import TeammateSpawnConfig
@@ -15,20 +16,19 @@ from openharness.swarm.types import TeammateSpawnConfig
 async def test_subprocess_backend_forwards_system_prompt_in_command(monkeypatch, tmp_path: Path):
     captured: dict[str, object] = {}
 
-    class _FakeTaskManager:
-        async def create_agent_task(self, **kwargs):
-            captured.update(kwargs)
-            return TaskRecord(
-                id="task_123",
-                type="local_agent",
-                status="running",
-                description=str(kwargs["description"]),
-                cwd=str(kwargs["cwd"]),
-                output_file=tmp_path / "task_123.log",
-                command=str(kwargs["command"]),
-            )
+    async def _fake_create_agent_task(self, **kwargs):
+        captured.update(kwargs)
+        return TaskRecord(
+            id="task_123",
+            type="local_agent",
+            status="running",
+            description=str(kwargs["description"]),
+            cwd=str(kwargs["cwd"]),
+            output_file=tmp_path / "task_123.log",
+            command=str(kwargs["command"]),
+        )
 
-    monkeypatch.setattr("openharness.swarm.subprocess_backend.get_task_manager", lambda: _FakeTaskManager())
+    monkeypatch.setattr(BackgroundTaskManager, "create_agent_task", _fake_create_agent_task)
     monkeypatch.setattr("openharness.swarm.subprocess_backend.get_teammate_command", lambda: "/usr/bin/python3")
     monkeypatch.setattr("openharness.swarm.subprocess_backend.build_inherited_env_vars", lambda: {})
 
@@ -55,20 +55,19 @@ async def test_subprocess_backend_forwards_system_prompt_in_command(monkeypatch,
 async def test_subprocess_backend_forwards_append_system_prompt_mode(monkeypatch, tmp_path: Path):
     captured: dict[str, object] = {}
 
-    class _FakeTaskManager:
-        async def create_agent_task(self, **kwargs):
-            captured.update(kwargs)
-            return TaskRecord(
-                id="task_234",
-                type="local_agent",
-                status="running",
-                description=str(kwargs["description"]),
-                cwd=str(kwargs["cwd"]),
-                output_file=tmp_path / "task_234.log",
-                command=str(kwargs["command"]),
-            )
+    async def _fake_create_agent_task(self, **kwargs):
+        captured.update(kwargs)
+        return TaskRecord(
+            id="task_234",
+            type="local_agent",
+            status="running",
+            description=str(kwargs["description"]),
+            cwd=str(kwargs["cwd"]),
+            output_file=tmp_path / "task_234.log",
+            command=str(kwargs["command"]),
+        )
 
-    monkeypatch.setattr("openharness.swarm.subprocess_backend.get_task_manager", lambda: _FakeTaskManager())
+    monkeypatch.setattr(BackgroundTaskManager, "create_agent_task", _fake_create_agent_task)
     monkeypatch.setattr("openharness.swarm.subprocess_backend.get_teammate_command", lambda: "/usr/bin/python3")
     monkeypatch.setattr("openharness.swarm.subprocess_backend.build_inherited_env_vars", lambda: {})
 
