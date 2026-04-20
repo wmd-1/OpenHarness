@@ -405,3 +405,27 @@ class TestStripThinkBlocks:
         visible, leftover = _strip_think_blocks(buf)
         assert visible == "visible"
         assert leftover == "<think>still open"
+
+    def test_partial_open_tag_is_held_for_next_chunk(self):
+        visible, leftover = _strip_think_blocks("prefix<thi")
+        assert visible == "prefix"
+        assert leftover == "<thi"
+
+    def test_partial_open_tag_after_closed_block_is_held(self):
+        buf = "<think>done</think>visible<thi"
+        visible, leftover = _strip_think_blocks(buf)
+        assert visible == "visible"
+        assert leftover == "<thi"
+
+    def test_split_open_tag_across_chunks_does_not_leak_reasoning(self):
+        buf = ""
+
+        buf += "<thi"
+        visible, buf = _strip_think_blocks(buf)
+        assert visible == ""
+        assert buf == "<thi"
+
+        buf += "nk>secret</think>answer"
+        visible, buf = _strip_think_blocks(buf)
+        assert visible == "answer"
+        assert buf == ""
