@@ -1,6 +1,7 @@
 """CLI smoke tests."""
 
 import json
+import re
 import sys
 import types
 from pathlib import Path
@@ -18,11 +19,16 @@ app = cli.app
 
 def test_cli_help():
     runner = CliRunner()
-    result = runner.invoke(app, ["--help"])
+    result = runner.invoke(
+        app,
+        ["--help"],
+        env={"NO_COLOR": "1", "COLUMNS": "160"},
+    )
+    plain_output = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
     assert result.exit_code == 0
-    assert "Oh my Harness!" in result.output
-    assert "setup" in result.output
-    assert "--dry-run" in result.output
+    assert "Oh my Harness!" in plain_output
+    assert "setup" in plain_output
+    assert "--dry-run" in plain_output
 
 
 def test_setup_flow_selects_profile_and_model(tmp_path: Path, monkeypatch):
