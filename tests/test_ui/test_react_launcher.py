@@ -231,14 +231,17 @@ async def test_run_print_mode_waits_for_coordinator_async_agents(monkeypatch):
     monkeypatch.setattr("openharness.ui.app.start_runtime", _start_runtime)
     monkeypatch.setattr("openharness.ui.app.handle_line", _handle_line)
     monkeypatch.setattr("openharness.ui.app.close_runtime", _close_runtime)
-    monkeypatch.setattr("openharness.ui.app.get_task_manager", lambda: fake_manager)
+    monkeypatch.setattr("openharness.ui.coordinator_drain.get_task_manager", lambda: fake_manager)
     monkeypatch.setattr("openharness.ui.app.is_coordinator_mode", lambda: True)
-    monkeypatch.setattr("openharness.ui.app.build_runtime_system_prompt", lambda *args, **kwargs: "coordinator")
+    monkeypatch.setattr(
+        "openharness.ui.coordinator_drain.build_runtime_system_prompt",
+        lambda *args, **kwargs: "coordinator",
+    )
 
     async def _sleep(_seconds):
         return None
 
-    monkeypatch.setattr("openharness.ui.app.asyncio.sleep", _sleep)
+    monkeypatch.setattr("openharness.ui.coordinator_drain.asyncio.sleep", _sleep)
 
     await run_print_mode(prompt="research this", cwd="/tmp/demo")
 
