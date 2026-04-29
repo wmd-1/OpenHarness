@@ -625,6 +625,7 @@ async def test_runtime_pool_prompt_excludes_project_memory(tmp_path, monkeypatch
     workspace = tmp_path / ".ohmo-home"
     initialize_workspace(workspace)
     add_ohmo_memory_entry(workspace, "personal", "ohmo-only personal fact")
+    monkeypatch.delenv("CLAUDE_CODE_COORDINATOR_MODE", raising=False)
     monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("OPENHARNESS_DATA_DIR", str(tmp_path / "data"))
     add_project_memory_entry(tmp_path, "project", "project memory should not leak")

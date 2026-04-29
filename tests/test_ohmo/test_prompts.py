@@ -36,6 +36,7 @@ def test_ohmo_prompt_includes_persona_and_memory(tmp_path: Path):
 
 
 def test_ohmo_runtime_prompt_can_exclude_project_memory(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("CLAUDE_CODE_COORDINATOR_MODE", raising=False)
     monkeypatch.setenv("OPENHARNESS_DATA_DIR", str(tmp_path / "data"))
     workspace = tmp_path / ".ohmo-home"
     initialize_workspace(workspace)
