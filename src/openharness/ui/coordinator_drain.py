@@ -134,6 +134,7 @@ async def submit_follow_up(
         latest_user_prompt=prompt_seed,
         extra_skill_dirs=bundle.extra_skill_dirs,
         extra_plugin_roots=bundle.extra_plugin_roots,
+        include_project_memory=bundle.include_project_memory,
     )
     bundle.engine.set_system_prompt(system_prompt)
     try:
