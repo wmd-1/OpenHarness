@@ -95,6 +95,19 @@ async def test_permissions_command_supports_explicit_remote_admin_opt_in(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_stop_command_explains_interrupt_paths(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    registry = create_default_command_registry()
+    command, args = registry.lookup("/stop")
+    assert command is not None
+
+    result = await command.handler(args, CommandContext(engine=_make_engine(tmp_path), cwd=str(tmp_path)))
+
+    assert "/stop" in result.message
+    assert "Esc/Ctrl+C" in result.message
+
+
+@pytest.mark.asyncio
 async def test_plugin_command_is_marked_local_only(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
     registry = create_default_command_registry()
