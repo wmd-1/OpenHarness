@@ -45,6 +45,7 @@ from openharness.tools.base import ToolRegistry
 
 AUTO_COMPACT_STATUS_MESSAGE = "Auto-compacting conversation memory to keep things fast and focused."
 REACTIVE_COMPACT_STATUS_MESSAGE = "Prompt too long; compacting conversation memory and retrying."
+MAX_SAFE_COMPLETION_TOKENS = 128_000
 
 log = logging.getLogger(__name__)
 
@@ -68,9 +69,14 @@ def _is_prompt_too_long_error(exc: Exception) -> bool:
         needle in text
         for needle in (
             "prompt too long",
+            "context_length_exceeded",
             "context length",
             "maximum context",
             "context window",
+            "input tokens exceed",
+            "messages resulted in",
+            "reduce the length of the messages",
+            "configured limit",
             "too many tokens",
             "too large for the model",
             "maximum context length",
@@ -78,6 +84,45 @@ def _is_prompt_too_long_error(exc: Exception) -> bool:
             "exceeds the available context size",
             "available context size",
         )
+    )
+
+
+def _bounded_completion_tokens(max_tokens: int, context_window_tokens: int | None = None) -> int:
+    """Return a conservative per-request output token cap.
+
+    Some OpenAI-compatible providers reject very large ``max_tokens`` before
+    the request reaches model-side context management.  Keep oversized user
+    config from making every turn fail while preserving normal defaults.
+    """
+    limit = MAX_SAFE_COMPLETION_TOKENS
+    if context_window_tokens is not None and context_window_tokens > 0:
+        limit = min(limit, int(context_window_tokens))
+    return max(1, min(int(max_tokens), limit))
+
+
+def _extract_completion_token_limit(exc: Exception) -> int | None:
+    """Parse provider errors such as "supports at most 128000 completion tokens"."""
+    text = str(exc).lower().replace(",", "")
+    patterns = (
+        r"supports at most\s+(\d+)\s+completion tokens",
+        r"at most\s+(\d+)\s+completion tokens",
+        r"max(?:imum)?(?:_completion)?[_\s-]tokens.*?(?:<=|less than or equal to|at most)\s+(\d+)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            try:
+                return max(1, int(match.group(1)))
+            except ValueError:
+                return None
+    return None
+
+
+def _is_completion_token_limit_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return (
+        ("max_tokens" in text or "max_completion_tokens" in text)
+        and ("too large" in text or "at most" in text or "completion tokens" in text)
     )
 
 
@@ -604,6 +649,11 @@ async def run_query(
     compact_state = AutoCompactState()
     reactive_compact_attempted = False
     last_compaction_result: tuple[list[ConversationMessage], bool] = (messages, False)
+    effective_max_tokens = _bounded_completion_tokens(
+        context.max_tokens,
+        context.context_window_tokens,
+    )
+    reported_token_clamp = False
 
     async def _stream_compaction(
         *,
@@ -648,6 +698,15 @@ async def run_query(
     turn_count = 0
     while context.max_turns is None or turn_count < context.max_turns:
         turn_count += 1
+        if effective_max_tokens != context.max_tokens and not reported_token_clamp:
+            reported_token_clamp = True
+            yield StatusEvent(
+                message=(
+                    "Requested max_tokens="
+                    f"{context.max_tokens} exceeds the safe per-request output cap; "
+                    f"using {effective_max_tokens}."
+                )
+            ), None
         # --- auto-compact check before calling the model ---------------
         async for event, usage in _stream_compaction(trigger="auto"):
             yield event, usage
@@ -668,7 +727,7 @@ async def run_query(
                     model=context.model,
                     messages=messages,
                     system_prompt=context.system_prompt,
-                    max_tokens=context.max_tokens,
+                    max_tokens=effective_max_tokens,
                     tools=context.tool_registry.to_api_schema(),
                 )
             ):
@@ -689,6 +748,19 @@ async def run_query(
                     usage = event.usage
         except Exception as exc:
             error_msg = str(exc)
+            if _is_completion_token_limit_error(exc):
+                supported_limit = _extract_completion_token_limit(exc)
+                if supported_limit is not None and effective_max_tokens > supported_limit:
+                    previous_max_tokens = effective_max_tokens
+                    effective_max_tokens = supported_limit
+                    yield StatusEvent(
+                        message=(
+                            f"Model rejected max_tokens={previous_max_tokens}; "
+                            f"retrying with provider limit {effective_max_tokens}."
+                        )
+                    ), None
+                    turn_count = max(0, turn_count - 1)
+                    continue
             if not reactive_compact_attempted and _is_prompt_too_long_error(exc):
                 reactive_compact_attempted = True
                 yield StatusEvent(message=REACTIVE_COMPACT_STATUS_MESSAGE), None
