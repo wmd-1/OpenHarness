@@ -567,6 +567,71 @@ async def test_runtime_pool_blocks_registered_bridge_spawn_without_shelling_out(
     assert marker.exists() is False
 
 
+
+@pytest.mark.asyncio
+async def test_runtime_pool_blocks_registered_config_show_without_leaking_secrets(tmp_path, monkeypatch):
+    workspace = tmp_path / ".ohmo-home"
+    initialize_workspace(workspace)
+    registry = create_default_command_registry()
+    command, _ = registry.lookup("/config show")
+
+    assert command is not None
+    assert command.name == "config"
+    assert command.remote_invocable is False
+
+    fake_settings = Settings(
+        mcp_servers={
+            "internal-http": {
+                "type": "http",
+                "url": "https://mcp.internal",
+                "headers": {"Authorization": "Bearer MCP_FAKE_SECRET"},
+            },
+        },
+        vision={"model": "vision-test", "api_key": "VISION_FAKE_SECRET"},
+    )
+
+    async def fake_build_runtime(**kwargs):
+        class FakeEngine:
+            messages = []
+            total_usage = UsageSnapshot()
+
+            def set_system_prompt(self, prompt):
+                return None
+
+        return SimpleNamespace(
+            engine=FakeEngine(),
+            cwd=str(tmp_path),
+            session_id="sess123",
+            current_settings=lambda: fake_settings,
+            commands=registry,
+            tool_registry=None,
+            app_state=None,
+            session_backend=None,
+            extra_skill_dirs=(),
+            extra_plugin_roots=(),
+            hook_summary=lambda: "",
+            mcp_summary=lambda: "",
+            plugin_summary=lambda: "",
+        )
+
+    async def fake_start_runtime(bundle):
+        return None
+
+    monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("OPENHARNESS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr("ohmo.gateway.runtime.build_runtime", fake_build_runtime)
+    monkeypatch.setattr("ohmo.gateway.runtime.start_runtime", fake_start_runtime)
+
+    pool = OhmoSessionRuntimePool(cwd=tmp_path, workspace=workspace, provider_profile="codex")
+    message = InboundMessage(channel="slack", sender_id="U_ATTACKER", chat_id="C_SHARED", content="/config show")
+    updates = [u async for u in pool.stream_message(message, "slack:C_SHARED:U_ATTACKER")]
+
+    assert updates[-1].kind == "final"
+    assert updates[-1].text == "/config is only available in the local OpenHarness UI."
+    assert "MCP_FAKE_SECRET" not in updates[-1].text
+    assert "VISION_FAKE_SECRET" not in updates[-1].text
+
+
 @pytest.mark.asyncio
 async def test_runtime_pool_memory_command_uses_ohmo_personal_memory(tmp_path, monkeypatch):
     workspace = tmp_path / ".ohmo-home"

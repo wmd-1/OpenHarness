@@ -222,6 +222,47 @@ def _rewind_turns(messages: list[ConversationMessage], turns: int) -> list[Conve
     return updated
 
 
+
+_SECRET_KEY_PARTS = (
+    "api_key",
+    "apikey",
+    "auth_token",
+    "access_token",
+    "refresh_token",
+    "token",
+    "secret",
+    "password",
+    "authorization",
+    "credential",
+    "private_key",
+)
+
+_REDACTED = "[REDACTED]"
+
+
+def _is_secret_key(key: object) -> bool:
+    normalized = str(key).lower().replace("-", "_")
+    return any(part in normalized for part in _SECRET_KEY_PARTS)
+
+
+def _redact_config_value(value: object, *, key: object | None = None) -> object:
+    if key is not None and _is_secret_key(key):
+        return _REDACTED
+    if isinstance(value, dict):
+        return {item_key: _redact_config_value(item_value, key=item_key) for item_key, item_value in value.items()}
+    if isinstance(value, list):
+        return [_redact_config_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_redact_config_value(item) for item in value]
+    if isinstance(value, str) and value.lower().startswith(("bearer ", "basic ")):
+        return _REDACTED
+    return value
+
+
+def _settings_json_for_display(settings: Settings) -> str:
+    return json.dumps(_redact_config_value(settings.model_dump()), indent=2, default=str)
+
+
 def _coerce_setting_value(settings: Settings, key: str, raw: str):
     field = Settings.model_fields.get(key)
     if field is None:
@@ -778,7 +819,7 @@ def create_default_command_registry(
         settings = load_settings()
         tokens = args.split(maxsplit=2)
         if not tokens or tokens[0] == "show":
-            return CommandResult(message=settings.model_dump_json(indent=2))
+            return CommandResult(message=_settings_json_for_display(settings))
         if tokens[0] == "set" and len(tokens) == 3:
             key, value = tokens[1], tokens[2]
             if key not in Settings.model_fields:
@@ -1989,13 +2030,45 @@ def create_default_command_registry(
             remote_admin_opt_in=True,
         )
     )
-    registry.register(SlashCommand("login", "Show auth status or store an API key", _login_handler))
-    registry.register(SlashCommand("logout", "Clear the stored API key", _logout_handler))
+    registry.register(
+        SlashCommand(
+            "login",
+            "Show auth status or store an API key",
+            _login_handler,
+            remote_invocable=False,
+            remote_admin_opt_in=True,
+        )
+    )
+    registry.register(
+        SlashCommand(
+            "logout",
+            "Clear the stored API key",
+            _logout_handler,
+            remote_invocable=False,
+            remote_admin_opt_in=True,
+        )
+    )
     registry.register(SlashCommand("feedback", "Save CLI feedback to the local feedback log", _feedback_handler))
     registry.register(SlashCommand("onboarding", "Show the quickstart guide", _onboarding_handler))
     registry.register(SlashCommand("skills", "List or show available skills", _skills_handler))
-    registry.register(SlashCommand("config", "Show or update configuration", _config_handler))
-    registry.register(SlashCommand("mcp", "Show MCP status", _mcp_handler))
+    registry.register(
+        SlashCommand(
+            "config",
+            "Show or update configuration",
+            _config_handler,
+            remote_invocable=False,
+            remote_admin_opt_in=True,
+        )
+    )
+    registry.register(
+        SlashCommand(
+            "mcp",
+            "Show MCP status",
+            _mcp_handler,
+            remote_invocable=False,
+            remote_admin_opt_in=True,
+        )
+    )
     registry.register(
         SlashCommand(
             "plugin",
@@ -2038,8 +2111,24 @@ def create_default_command_registry(
     registry.register(SlashCommand("turns", "Show or update maximum agentic turn count", _turns_handler))
     registry.register(SlashCommand("continue", "Continue the previous tool loop if it was interrupted", _continue_handler))
     registry.register(SlashCommand("stop", "Interrupt the running turn from TUI/ohmo channels", _stop_handler))
-    registry.register(SlashCommand("provider", "Show or switch provider profiles", _provider_handler))
-    registry.register(SlashCommand("model", "Show, switch, or manage profile models", _model_handler))
+    registry.register(
+        SlashCommand(
+            "provider",
+            "Show or switch provider profiles",
+            _provider_handler,
+            remote_invocable=False,
+            remote_admin_opt_in=True,
+        )
+    )
+    registry.register(
+        SlashCommand(
+            "model",
+            "Show, switch, or manage profile models",
+            _model_handler,
+            remote_invocable=False,
+            remote_admin_opt_in=True,
+        )
+    )
     registry.register(SlashCommand("theme", "List, set, show or preview TUI themes", _theme_handler))
     registry.register(SlashCommand("output-style", "Show or update output style", _output_style_handler))
     registry.register(SlashCommand("keybindings", "Show resolved keybindings", _keybindings_handler))
@@ -2059,7 +2148,15 @@ def create_default_command_registry(
     registry.register(SlashCommand("subagents", "Show subagent usage and inspect worker tasks", _agents_handler))
     registry.register(SlashCommand("tasks", "Manage background tasks", _tasks_handler))
     registry.register(SlashCommand("autopilot", "Manage repo autopilot intake and context", _autopilot_handler))
-    registry.register(SlashCommand("ship", "Queue and execute an ohmo-driven repo task", _ship_handler))
+    registry.register(
+        SlashCommand(
+            "ship",
+            "Queue and execute an ohmo-driven repo task",
+            _ship_handler,
+            remote_invocable=False,
+            remote_admin_opt_in=True,
+        )
+    )
 
     for plugin_command in plugin_commands or ():
         if not plugin_command.user_invocable:

@@ -161,6 +161,76 @@ async def test_bridge_command_supports_explicit_remote_admin_opt_in(tmp_path: Pa
     assert getattr(command, "remote_admin_opt_in", False) is True
 
 
+
+@pytest.mark.asyncio
+async def test_sensitive_control_plane_commands_are_local_only(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    registry = create_default_command_registry()
+
+    for payload in (
+        "/config show",
+        "/login TEST_KEY",
+        "/logout",
+        "/mcp",
+        "/provider",
+        "/model show",
+        "/ship",
+    ):
+        command, _ = registry.lookup(payload)
+        assert command is not None
+        assert command.remote_invocable is False, payload
+        assert command.remote_admin_opt_in is True, payload
+
+
+@pytest.mark.asyncio
+async def test_config_show_redacts_nested_mcp_and_vision_secrets(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    settings = Settings(
+        api_key="TOP_LEVEL_FAKE_SECRET",
+        mcp_servers={
+            "internal-http": McpHttpServerConfig(
+                url="https://mcp.internal",
+                headers={
+                    "Authorization": "Bearer MCP_FAKE_SECRET",
+                    "X-Token": "RAW_FAKE_TOKEN",
+                    "X-Public": "non-secret-value",
+                },
+            ),
+            "local-stdio": McpStdioServerConfig(
+                command="server",
+                env={
+                    "MCP_AUTH_TOKEN": "STDIO_FAKE_SECRET",
+                    "SAFE_SETTING": "visible",
+                },
+            ),
+        },
+        vision={
+            "model": "vision-test",
+            "api_key": "VISION_FAKE_SECRET",
+            "base_url": "https://vision.example",
+        },
+    )
+    monkeypatch.setattr(registry_module, "load_settings", lambda: settings)
+
+    registry = create_default_command_registry()
+    command, args = registry.lookup("/config show")
+    assert command is not None
+
+    result = await command.handler(args, CommandContext(engine=_make_engine(tmp_path), cwd=str(tmp_path)))
+
+    for secret in (
+        "TOP_LEVEL_FAKE_SECRET",
+        "MCP_FAKE_SECRET",
+        "RAW_FAKE_TOKEN",
+        "STDIO_FAKE_SECRET",
+        "VISION_FAKE_SECRET",
+    ):
+        assert secret not in result.message
+    assert "[REDACTED]" in result.message
+    assert "non-secret-value" in result.message
+    assert "visible" in result.message
+
+
 @pytest.mark.asyncio
 async def test_memory_show_rejects_path_traversal(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
