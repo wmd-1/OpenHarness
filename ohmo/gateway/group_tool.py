@@ -129,7 +129,8 @@ class OhmoCreateFeishuGroupTool(BaseTool):
             "这个群已经创建好。"
             + (f"\n已绑定工作目录：{cwd}" if cwd else "")
             + (f"\n关联仓库：{arguments.repo}" if arguments.repo else "")
-            + "\n在飞书群里如果我没有响应，请先 @ohmo 发送消息；如果想不用 @，需要给应用开通接收群聊所有消息的权限。"
+            + "\n这个 ohmo 管理的群默认可以不用 @ 直接和我说话；普通群仍建议 @ohmo 触发。"
+            + "\n如果我没有响应，请确认飞书应用已开通接收群聊所有消息的权限。"
         )
         if self._publish_group_welcome is not None:
             published = self._publish_group_welcome(chat_id, welcome, owner_open_id)

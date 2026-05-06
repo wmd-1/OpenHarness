@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 
 from openharness.channels.bus.events import InboundMessage
 from openharness.channels.bus.events import OutboundMessage
 from openharness.channels.bus.queue import MessageBus
 
+from ohmo.group_registry import load_managed_group_record
 from ohmo.gateway.router import session_key_for_message
 from ohmo.gateway.runtime import OhmoSessionRuntimePool
 
@@ -60,10 +62,14 @@ class OhmoGatewayBridge:
         bus: MessageBus,
         runtime_pool: OhmoSessionRuntimePool,
         restart_gateway: Callable[[object, str], Awaitable[None] | None] | None = None,
+        workspace: str | Path | None = None,
+        feishu_group_policy: str = "open",
     ) -> None:
         self._bus = bus
         self._runtime_pool = runtime_pool
         self._restart_gateway = restart_gateway
+        self._workspace = workspace
+        self._feishu_group_policy = _normalize_feishu_group_policy(feishu_group_policy)
         self._running = False
         self._session_tasks: dict[str, asyncio.Task[None]] = {}
         self._session_cancel_reasons: dict[str, str] = {}
@@ -77,6 +83,17 @@ class OhmoGatewayBridge:
                 continue
             except asyncio.CancelledError:
                 break
+
+            if not self._should_process_message(message):
+                logger.info(
+                    "ohmo inbound ignored channel=%s chat_id=%s sender_id=%s reason=feishu_group_policy policy=%s content=%r",
+                    message.channel,
+                    message.chat_id,
+                    message.sender_id,
+                    self._feishu_group_policy,
+                    _content_snippet(message.content),
+                )
+                continue
 
             session_key = session_key_for_message(message)
             logger.info(
@@ -311,6 +328,35 @@ class OhmoGatewayBridge:
             self._session_tasks.pop(session_key, None)
         self._session_cancel_reasons.pop(session_key, None)
 
+    def _should_process_message(self, message: InboundMessage) -> bool:
+        if message.channel != "feishu":
+            return True
+        chat_type = str(message.metadata.get("chat_type") or "").strip().lower()
+        if chat_type != "group":
+            return True
+        policy = self._feishu_group_policy
+        if policy == "open":
+            return True
+        mentioned = _message_mentions_bot(message)
+        if policy == "mention":
+            return mentioned
+        if policy == "managed":
+            return self._is_managed_feishu_group(message.chat_id)
+        if policy == "managed_or_mention":
+            return mentioned or self._is_managed_feishu_group(message.chat_id)
+        return mentioned
+
+    def _is_managed_feishu_group(self, chat_id: str) -> bool:
+        try:
+            return load_managed_group_record(
+                workspace=self._workspace,
+                channel="feishu",
+                chat_id=chat_id,
+            ) is not None
+        except Exception:
+            logger.exception("failed to load ohmo managed group metadata chat_id=%s", chat_id)
+            return False
+
 
 def _parse_group_command(content: str) -> str | None:
     stripped = content.strip()
@@ -334,3 +380,29 @@ def _build_group_agent_prompt(raw_request: str) -> str:
         "instead of calling the tool. Do not create the group via bash or direct API calls.\n\n"
         f"User /group request:\n{request}"
     )
+
+
+def _normalize_feishu_group_policy(value: str | None) -> str:
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    aliases = {
+        "all": "open",
+        "always": "open",
+        "always_reply": "open",
+        "managed_mention": "managed_or_mention",
+        "managed_or_at": "managed_or_mention",
+        "at": "mention",
+        "mentions": "mention",
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized in {"open", "mention", "managed", "managed_or_mention"}:
+        return normalized
+    return "managed_or_mention"
+
+
+def _message_mentions_bot(message: InboundMessage) -> bool:
+    value = message.metadata.get("mentions_bot")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return False

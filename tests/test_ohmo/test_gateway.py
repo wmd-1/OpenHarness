@@ -1195,6 +1195,166 @@ async def test_gateway_bridge_threads_group_feishu_replies():
 
 
 @pytest.mark.asyncio
+async def test_gateway_bridge_ignores_unmentioned_unmanaged_feishu_group(tmp_path):
+    bus = MessageBus()
+    calls: list[InboundMessage] = []
+
+    class FakeRuntimePool:
+        async def stream_message(self, message, session_key):
+            calls.append(message)
+            yield SimpleNamespace(kind="final", text="should not happen", metadata={"_session_key": session_key})
+
+    bridge = OhmoGatewayBridge(
+        bus=bus,
+        runtime_pool=FakeRuntimePool(),
+        workspace=tmp_path,
+        feishu_group_policy="managed_or_mention",
+    )
+    task = asyncio.create_task(bridge.run())
+    try:
+        await bus.publish_inbound(
+            InboundMessage(
+                channel="feishu",
+                sender_id="ou_1",
+                chat_id="oc_random",
+                content="这个普通群消息不应该触发",
+                metadata={"chat_type": "group", "mentions_bot": False},
+            )
+        )
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(bus.consume_outbound(), timeout=0.1)
+    finally:
+        bridge.stop()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_gateway_bridge_processes_managed_feishu_group_without_mention(tmp_path):
+    bus = MessageBus()
+    save_managed_group_record(
+        workspace=tmp_path,
+        channel="feishu",
+        chat_id="oc_managed",
+        owner_open_id="ou_owner",
+        name="Managed Group",
+    )
+
+    class FakeRuntimePool:
+        async def stream_message(self, message, session_key):
+            yield SimpleNamespace(kind="final", text="managed done", metadata={"_session_key": session_key})
+
+    bridge = OhmoGatewayBridge(
+        bus=bus,
+        runtime_pool=FakeRuntimePool(),
+        workspace=tmp_path,
+        feishu_group_policy="managed_or_mention",
+    )
+    task = asyncio.create_task(bridge.run())
+    try:
+        await bus.publish_inbound(
+            InboundMessage(
+                channel="feishu",
+                sender_id="ou_1",
+                chat_id="oc_managed",
+                content="不用 @ 也应该处理",
+                metadata={"chat_type": "group", "mentions_bot": False},
+            )
+        )
+        final = await asyncio.wait_for(bus.consume_outbound(), timeout=1.0)
+    finally:
+        bridge.stop()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    assert final.content == "managed done"
+
+
+@pytest.mark.asyncio
+async def test_gateway_bridge_processes_mentioned_unmanaged_feishu_group(tmp_path):
+    bus = MessageBus()
+
+    class FakeRuntimePool:
+        async def stream_message(self, message, session_key):
+            yield SimpleNamespace(kind="final", text="mentioned done", metadata={"_session_key": session_key})
+
+    bridge = OhmoGatewayBridge(
+        bus=bus,
+        runtime_pool=FakeRuntimePool(),
+        workspace=tmp_path,
+        feishu_group_policy="managed_or_mention",
+    )
+    task = asyncio.create_task(bridge.run())
+    try:
+        await bus.publish_inbound(
+            InboundMessage(
+                channel="feishu",
+                sender_id="ou_1",
+                chat_id="oc_random",
+                content="@ohmo 帮我看下",
+                metadata={"chat_type": "group", "mentions_bot": True},
+            )
+        )
+        final = await asyncio.wait_for(bus.consume_outbound(), timeout=1.0)
+    finally:
+        bridge.stop()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    assert final.content == "mentioned done"
+
+
+@pytest.mark.asyncio
+async def test_gateway_bridge_mention_policy_overrides_managed_feishu_group(tmp_path):
+    bus = MessageBus()
+    calls: list[InboundMessage] = []
+    save_managed_group_record(
+        workspace=tmp_path,
+        channel="feishu",
+        chat_id="oc_managed",
+        owner_open_id="ou_owner",
+        name="Managed Group",
+    )
+
+    class FakeRuntimePool:
+        async def stream_message(self, message, session_key):
+            calls.append(message)
+            yield SimpleNamespace(kind="final", text="should not happen", metadata={"_session_key": session_key})
+
+    bridge = OhmoGatewayBridge(
+        bus=bus,
+        runtime_pool=FakeRuntimePool(),
+        workspace=tmp_path,
+        feishu_group_policy="mention",
+    )
+    task = asyncio.create_task(bridge.run())
+    try:
+        await bus.publish_inbound(
+            InboundMessage(
+                channel="feishu",
+                sender_id="ou_1",
+                chat_id="oc_managed",
+                content="mention policy 下没有 @ 不应该处理",
+                metadata={"chat_type": "group", "mentions_bot": False},
+            )
+        )
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(bus.consume_outbound(), timeout=0.1)
+    finally:
+        bridge.stop()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_gateway_bridge_logs_inbound_and_final(caplog):
     bus = MessageBus()
 

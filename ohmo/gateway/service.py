@@ -66,6 +66,10 @@ class OhmoGatewayService:
             bus=self._bus,
             runtime_pool=self._runtime_pool,
             restart_gateway=self.request_restart,
+            workspace=root,
+            feishu_group_policy=str(
+                self._config.channel_configs.get("feishu", {}).get("group_policy", "managed_or_mention")
+            ),
         )
 
     @property
