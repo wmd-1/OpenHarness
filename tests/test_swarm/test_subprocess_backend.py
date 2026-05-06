@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -138,8 +139,8 @@ async def test_subprocess_backend_passes_argv_list_not_shell_command(
     assert captured.get("command") is None
     argv = captured.get("argv")
     assert isinstance(argv, list) and argv, "expected non-empty argv list"
-    # First element is the python interpreter.
-    assert argv[0].endswith(("python", "python3", "python.exe", "python3.exe"))
+    # First element is the exact Python interpreter selected for teammate spawn.
+    assert argv[0] == sys.executable
     # Tail must include the worker invocation.
     assert "--task-worker" in argv
 
