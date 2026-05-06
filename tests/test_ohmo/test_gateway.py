@@ -15,7 +15,7 @@ from openharness.channels.bus.events import InboundMessage
 from openharness.channels.bus.queue import MessageBus
 from openharness.commands import CommandResult
 from openharness.commands.registry import SlashCommand, create_default_command_registry
-from openharness.config.settings import PermissionSettings, Settings
+from openharness.config.settings import PermissionSettings, ProviderProfile, Settings
 from openharness.engine.messages import ConversationMessage, ImageBlock, TextBlock, ToolUseBlock
 from openharness.engine.query_engine import QueryEngine
 from openharness.engine.stream_events import (
@@ -31,9 +31,10 @@ from openharness.permissions import PermissionChecker, PermissionMode
 from openharness.tools.base import ToolExecutionContext, ToolRegistry
 
 from ohmo.gateway.bridge import OhmoGatewayBridge, _format_gateway_error
-from ohmo.gateway.config import save_gateway_config
+from ohmo.gateway.config import load_gateway_config, save_gateway_config
 from ohmo.gateway.group_tool import OhmoCreateFeishuGroupInput, OhmoCreateFeishuGroupTool
 from ohmo.gateway.models import GatewayConfig, GatewayState
+from ohmo.gateway.provider_commands import handle_gateway_model_command, handle_gateway_provider_command
 from ohmo.gateway.runtime import OhmoSessionRuntimePool, _build_inbound_user_message, _format_channel_progress
 from ohmo.gateway.service import OhmoGatewayService, gateway_status, stop_gateway_process
 from ohmo.group_registry import load_managed_group_record, save_managed_group_record
@@ -1635,6 +1636,173 @@ async def test_runtime_pool_logs_session_lifecycle(tmp_path, monkeypatch, caplog
     assert "ohmo runtime tool start" in caplog.text
     assert "ohmo runtime saved snapshot" in caplog.text
     assert "ohmo runtime processing complete" in caplog.text
+
+
+def test_gateway_provider_command_uses_ohmo_gateway_profile(tmp_path, monkeypatch):
+    workspace = initialize_workspace(tmp_path / ".ohmo-home")
+    save_gateway_config(GatewayConfig(provider_profile="kimi-anthropic"), workspace)
+
+    statuses = {
+        "codex": {
+            "label": "Codex subscription",
+            "configured": True,
+            "base_url": None,
+            "model": "gpt-5.4",
+        },
+        "kimi-anthropic": {
+            "label": "Kimi Anthropic",
+            "configured": True,
+            "base_url": "https://api.example.test",
+            "model": "kimi-k2.5",
+        },
+    }
+
+    class FakeAuthManager:
+        def __init__(self, settings):
+            del settings
+
+        def get_profile_statuses(self):
+            return statuses
+
+    monkeypatch.setattr("ohmo.gateway.provider_commands.load_settings", lambda: object())
+    monkeypatch.setattr("ohmo.gateway.provider_commands.AuthManager", FakeAuthManager)
+
+    text, refresh = handle_gateway_provider_command("list", workspace=workspace)
+    assert refresh is False
+    assert "ohmo gateway provider profiles:" in text
+    assert "* kimi-anthropic [ready]" in text
+    assert "  codex [ready]" in text
+
+    text, refresh = handle_gateway_provider_command("codex", workspace=workspace)
+    assert refresh is True
+    assert "provider_profile set to codex" in text
+    assert load_gateway_config(workspace).provider_profile == "codex"
+
+
+def test_gateway_model_command_updates_selected_gateway_profile(tmp_path, monkeypatch):
+    workspace = initialize_workspace(tmp_path / ".ohmo-home")
+    save_gateway_config(GatewayConfig(provider_profile="codex"), workspace)
+    profile = ProviderProfile(
+        label="Codex",
+        provider="openai_codex",
+        api_format="responses",
+        auth_source="codex_subscription",
+        default_model="gpt-5.4",
+        allowed_models=["gpt-5.4", "gpt-5.5"],
+    )
+    updates: list[tuple[str, dict[str, object]]] = []
+
+    class FakeAuthManager:
+        def __init__(self, settings):
+            del settings
+
+        def list_profiles(self):
+            return {"codex": profile}
+
+        def update_profile(self, name, **kwargs):
+            nonlocal profile
+            updates.append((name, kwargs))
+            profile = profile.model_copy(update={key: value for key, value in kwargs.items() if value is not None})
+
+    monkeypatch.setattr("ohmo.gateway.provider_commands.load_settings", lambda: object())
+    monkeypatch.setattr("ohmo.gateway.provider_commands.AuthManager", FakeAuthManager)
+
+    text, refresh = handle_gateway_model_command("show", workspace=workspace)
+    assert refresh is False
+    assert "ohmo gateway model: gpt-5.4" in text
+    assert "Profile: codex" in text
+
+    text, refresh = handle_gateway_model_command("list", workspace=workspace)
+    assert refresh is False
+    assert "- gpt-5.4" in text
+    assert "- gpt-5.5" in text
+
+    text, refresh = handle_gateway_model_command("gpt-5.5", workspace=workspace)
+    assert refresh is True
+    assert "model set to gpt-5.5" in text
+    assert updates[-1] == ("codex", {"last_model": "gpt-5.5"})
+
+
+@pytest.mark.asyncio
+async def test_runtime_pool_provider_command_refresh_uses_gateway_profile(tmp_path, monkeypatch):
+    workspace = tmp_path / ".ohmo-home"
+    initialize_workspace(workspace)
+    save_gateway_config(GatewayConfig(provider_profile="kimi-anthropic"), workspace)
+    build_calls: list[dict[str, object]] = []
+
+    statuses = {
+        "codex": {
+            "label": "Codex subscription",
+            "configured": True,
+            "base_url": None,
+            "model": "gpt-5.4",
+        },
+        "kimi-anthropic": {
+            "label": "Kimi Anthropic",
+            "configured": True,
+            "base_url": "https://api.example.test",
+            "model": "kimi-k2.5",
+        },
+    }
+
+    class FakeAuthManager:
+        def __init__(self, settings):
+            del settings
+
+        def get_profile_statuses(self):
+            return statuses
+
+    class FakeEngine:
+        def __init__(self):
+            self.messages = [ConversationMessage.from_user_text("before")]
+            self.total_usage = UsageSnapshot()
+
+        def set_system_prompt(self, prompt):
+            del prompt
+
+        async def submit_message(self, content):
+            del content
+            if False:
+                yield None
+
+    async def fake_build_runtime(**kwargs):
+        build_calls.append(kwargs)
+        return SimpleNamespace(
+            engine=FakeEngine(),
+            session_id="sess123",
+            current_settings=lambda: SimpleNamespace(model="gpt-5.4"),
+            commands=create_default_command_registry(),
+            hook_summary=lambda: "",
+            mcp_summary=lambda: "",
+            plugin_summary=lambda: "",
+            cwd=str(tmp_path),
+            tool_registry=None,
+            app_state=None,
+            session_backend=None,
+            extra_skill_dirs=(),
+            extra_plugin_roots=(),
+            enforce_max_turns=False,
+        )
+
+    async def fake_start_runtime(bundle):
+        del bundle
+
+    async def fake_close_runtime(bundle):
+        del bundle
+
+    monkeypatch.setattr("ohmo.gateway.provider_commands.load_settings", lambda: object())
+    monkeypatch.setattr("ohmo.gateway.provider_commands.AuthManager", FakeAuthManager)
+    monkeypatch.setattr("ohmo.gateway.runtime.build_runtime", fake_build_runtime)
+    monkeypatch.setattr("ohmo.gateway.runtime.start_runtime", fake_start_runtime)
+    monkeypatch.setattr("ohmo.gateway.runtime.close_runtime", fake_close_runtime)
+
+    pool = OhmoSessionRuntimePool(cwd=tmp_path, workspace=workspace, provider_profile="kimi-anthropic")
+    message = InboundMessage(channel="feishu", sender_id="u1", chat_id="c1", content="/provider codex")
+    updates = [u async for u in pool.stream_message(message, "feishu:c1")]
+
+    assert updates[-1].text.startswith("ohmo gateway provider_profile set to codex")
+    assert build_calls[0]["active_profile"] == "kimi-anthropic"
+    assert build_calls[1]["active_profile"] == "codex"
 
 
 @pytest.mark.asyncio

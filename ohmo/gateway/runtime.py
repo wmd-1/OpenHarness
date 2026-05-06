@@ -34,6 +34,7 @@ from openharness.ui.runtime import RuntimeBundle, _last_user_text, build_runtime
 
 from ohmo.gateway.config import load_gateway_config
 from ohmo.gateway.group_tool import CreateFeishuGroup, OhmoCreateFeishuGroupTool, PublishGroupWelcome
+from ohmo.gateway.provider_commands import handle_gateway_model_command, handle_gateway_provider_command
 from ohmo.group_registry import load_managed_group_record, normalize_cwd
 from ohmo.memory import create_memory_command_backend
 from ohmo.prompts import build_ohmo_system_prompt
@@ -119,6 +120,19 @@ class OhmoSessionRuntimePool:
         }
         return command.name.lower() in allowed
 
+    def _handle_gateway_scoped_command(self, command_name: str, args: str) -> tuple[str, bool] | None:
+        lowered = command_name.lower()
+        if lowered == "provider":
+            result = handle_gateway_provider_command(args, workspace=self._workspace)
+        elif lowered == "model":
+            result = handle_gateway_model_command(args, workspace=self._workspace)
+        else:
+            return None
+        if result[1]:
+            self._gateway_config = load_gateway_config(self._workspace)
+            self._provider_profile = self._gateway_config.provider_profile
+        return result
+
     async def get_bundle(
         self,
         session_key: str,
@@ -203,6 +217,20 @@ class OhmoSessionRuntimePool:
         parsed = bundle.commands.lookup(user_prompt)
         if parsed is not None and not message.media:
             command, args = parsed
+            command_name = str(getattr(command, "name", "") or "")
+            gateway_result = self._handle_gateway_scoped_command(command_name, args)
+            if gateway_result is not None:
+                message_text, refresh_runtime = gateway_result
+                result = CommandResult(message=message_text, refresh_runtime=refresh_runtime)
+                async for update in self._stream_command_result(
+                    bundle=bundle,
+                    message=message,
+                    session_key=session_key,
+                    user_prompt=user_prompt,
+                    result=result,
+                ):
+                    yield update
+                return
             remote_allowed = getattr(command, "remote_invocable", True)
             if not remote_allowed and self._remote_admin_allowed(command):
                 remote_allowed = True
@@ -211,11 +239,11 @@ class OhmoSessionRuntimePool:
                     message.channel,
                     message.chat_id,
                     message.sender_id,
-                    command.name,
+                    command_name,
                 )
             if not remote_allowed:
                 result = CommandResult(
-                    message=f"/{command.name} is only available in the local OpenHarness UI."
+                    message=f"/{command_name} is only available in the local OpenHarness UI."
                 )
                 async for update in self._stream_command_result(
                     bundle=bundle,
