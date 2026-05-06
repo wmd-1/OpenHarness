@@ -35,7 +35,13 @@ from ohmo.gateway.config import load_gateway_config, save_gateway_config
 from ohmo.gateway.group_tool import OhmoCreateFeishuGroupInput, OhmoCreateFeishuGroupTool
 from ohmo.gateway.models import GatewayConfig, GatewayState
 from ohmo.gateway.provider_commands import handle_gateway_model_command, handle_gateway_provider_command
-from ohmo.gateway.runtime import OhmoSessionRuntimePool, _build_inbound_user_message, _format_channel_progress
+from ohmo.gateway.runtime import (
+    OhmoSessionRuntimePool,
+    _build_inbound_user_message,
+    _format_channel_progress,
+    _sanitize_group_command_metadata,
+    _sanitize_group_command_prompts,
+)
 from ohmo.gateway.service import OhmoGatewayService, gateway_status, stop_gateway_process
 from ohmo.group_registry import load_managed_group_record, save_managed_group_record
 from ohmo.memory import add_memory_entry as add_ohmo_memory_entry
@@ -1721,6 +1727,97 @@ def test_gateway_model_command_updates_selected_gateway_profile(tmp_path, monkey
     assert refresh is True
     assert "model set to gpt-5.5" in text
     assert updates[-1] == ("codex", {"last_model": "gpt-5.5"})
+
+
+def test_runtime_pool_only_exposes_group_tool_for_group_command_turn(tmp_path):
+    async def fake_create_group(user_open_id: str, name: str) -> str:
+        del user_open_id, name
+        return "oc_group"
+
+    workspace = initialize_workspace(tmp_path / ".ohmo-home")
+    pool = OhmoSessionRuntimePool(
+        cwd=tmp_path,
+        workspace=workspace,
+        provider_profile="codex",
+        create_feishu_group=fake_create_group,
+    )
+    bundle = SimpleNamespace(
+        engine=SimpleNamespace(tool_metadata={}),
+        tool_registry=ToolRegistry(),
+    )
+
+    pool._set_group_request_context(
+        bundle,
+        InboundMessage(channel="feishu", sender_id="u1", chat_id="u1", content="hello"),
+        "feishu:u1",
+    )
+    assert bundle.tool_registry.get("ohmo_create_feishu_group") is None
+
+    previous = pool._set_group_request_context(
+        bundle,
+        InboundMessage(
+            channel="feishu",
+            sender_id="u1",
+            chat_id="u1",
+            content="create",
+            metadata={"_ohmo_group_command": True, "_ohmo_group_raw_request": "创建项目群", "chat_type": "p2p"},
+        ),
+        "feishu:u1",
+    )
+    assert bundle.tool_registry.get("ohmo_create_feishu_group") is not None
+    assert bundle.engine.tool_metadata.get("_suppress_next_user_goal") is True
+
+    pool._restore_group_request_context(bundle, previous)
+    assert "ohmo_group_request" not in bundle.engine.tool_metadata
+    assert "_suppress_next_user_goal" not in bundle.engine.tool_metadata
+    assert bundle.tool_registry.get("ohmo_create_feishu_group") is None
+
+
+def test_runtime_pool_sanitizes_internal_group_prompt_history():
+    messages = _sanitize_group_command_prompts([
+        ConversationMessage.from_user_text(
+            "The user invoked `/group` from a Feishu private chat.\n"
+            "Your task is to create a dedicated Feishu group for this request.\n\n"
+            "Use the `ohmo_create_feishu_group` tool exactly once.\n\n"
+            "User /group request:\n"
+            "帮我创建一个群聊专门处理novix-monorepo的问题，绑定cwd在~/novix-monorepo"
+        ),
+        ConversationMessage.from_user_text("你现在使用的是什么模型"),
+    ])
+
+    first_text = messages[0].text
+    assert "Use the `ohmo_create_feishu_group` tool exactly once" not in first_text
+    assert "[Handled /group request]" in first_text
+    assert "novix-monorepo" in first_text
+    assert messages[1].text == "你现在使用的是什么模型"
+
+
+def test_runtime_pool_sanitizes_internal_group_prompt_metadata():
+    internal_prompt = (
+        "The user invoked `/group` from a Feishu private chat.\n"
+        "Use the `ohmo_create_feishu_group` tool exactly once.\n\n"
+        "User /group request:\n"
+        "帮我创建一个群聊专门处理novix-monorepo的问题，绑定cwd在~/novix-monorepo"
+    )
+
+    metadata = _sanitize_group_command_metadata(
+        {
+            "task_focus_state": {
+                "goal": internal_prompt,
+                "recent_goals": [internal_prompt, "你现在使用的是什么模型"],
+                "next_step": internal_prompt,
+            },
+            "recent_work_log": [internal_prompt],
+            "mcp_manager": object(),
+        }
+    )
+
+    focus = metadata["task_focus_state"]
+    rendered = "\n".join([focus["goal"], *focus["recent_goals"], focus["next_step"], *metadata["recent_work_log"]])
+    assert "Use the `ohmo_create_feishu_group` tool exactly once" not in rendered
+    assert "[Handled /group request]" in rendered
+    assert "你现在使用的是什么模型" in rendered
+    assert "mcp_manager" in metadata
 
 
 @pytest.mark.asyncio

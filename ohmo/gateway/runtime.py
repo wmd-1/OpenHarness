@@ -67,6 +67,16 @@ _IMAGE_FALLBACK_NOTE = (
     "Use the attachment paths and summaries above if needed.]"
 )
 _NO_GROUP_REQUEST = object()
+_GROUP_TOOL_NAME = "ohmo_create_feishu_group"
+_GROUP_AGENT_PROMPT_PREFIX = "The user invoked `/group` from a Feishu private chat."
+_GROUP_AGENT_PROMPT_REQUEST_MARKER = "User /group request:"
+_GROUP_METADATA_KEYS = (
+    "task_focus_state",
+    "recent_work_log",
+    "recent_verified_work",
+    "compact_checkpoints",
+    "compact_last",
+)
 
 
 @dataclass(frozen=True)
@@ -178,8 +188,8 @@ class OhmoSessionRuntimePool:
             active_profile=self._provider_profile,
             session_backend=self._session_backend,
             enforce_max_turns=self._max_turns is not None,
-            restore_messages=snapshot.get("messages") if snapshot else None,
-            restore_tool_metadata=snapshot.get("tool_metadata") if snapshot else None,
+            restore_messages=_sanitize_snapshot_messages(snapshot.get("messages") if snapshot else None),
+            restore_tool_metadata=_sanitize_group_command_metadata(snapshot.get("tool_metadata") if snapshot else None),
             extra_skill_dirs=(str(get_skills_dir(self._workspace)),),
             extra_plugin_roots=(str(get_plugins_dir(self._workspace)),),
             memory_backend=create_memory_command_backend(self._workspace),
@@ -442,6 +452,9 @@ class OhmoSessionRuntimePool:
             self._restore_group_request_context(bundle, previous_group_request)
             await self._save_snapshot(bundle, session_key, user_prompt)
             return
+        except Exception:
+            self._restore_group_request_context(bundle, previous_group_request)
+            raise
         self._restore_group_request_context(bundle, previous_group_request)
         await self._save_snapshot(bundle, session_key, user_prompt)
         reply = "".join(reply_parts).strip()
@@ -569,12 +582,20 @@ class OhmoSessionRuntimePool:
             reply_parts.append(event.message.text.strip())
 
     async def _save_snapshot(self, bundle: RuntimeBundle, session_key: str, user_prompt: str) -> None:
-        tool_metadata = getattr(bundle.engine, "tool_metadata", {}) or {}
+        tool_metadata = _sanitize_group_command_metadata(getattr(bundle.engine, "tool_metadata", {}) or {})
+        if isinstance(getattr(bundle.engine, "tool_metadata", None), dict) and isinstance(tool_metadata, dict):
+            bundle.engine.tool_metadata.update(tool_metadata)
+        messages = _sanitize_group_command_prompts(list(bundle.engine.messages))
+        if messages != list(bundle.engine.messages):
+            if hasattr(bundle.engine, "load_messages"):
+                bundle.engine.load_messages(messages)
+            else:
+                bundle.engine.messages = messages
         self._session_backend.save_snapshot(
             cwd=getattr(bundle, "cwd", self._cwd),
             model=bundle.current_settings().model,
             system_prompt=self._runtime_system_prompt(bundle, user_prompt),
-            messages=bundle.engine.messages,
+            messages=messages,
             usage=bundle.engine.total_usage,
             session_id=bundle.session_id,
             session_key=session_key,
@@ -605,8 +626,8 @@ class OhmoSessionRuntimePool:
             active_profile=self._provider_profile,
             session_backend=self._session_backend,
             enforce_max_turns=self._max_turns is not None,
-            restore_messages=[message.model_dump(mode="json") for message in snapshot],
-            restore_tool_metadata=getattr(bundle.engine, "tool_metadata", {}) or {},
+            restore_messages=[message.model_dump(mode="json") for message in _sanitize_group_command_prompts(snapshot)],
+            restore_tool_metadata=_sanitize_group_command_metadata(getattr(bundle.engine, "tool_metadata", {}) or {}),
             extra_skill_dirs=(str(get_skills_dir(self._workspace)),),
             extra_plugin_roots=(str(get_plugins_dir(self._workspace)),),
             memory_backend=create_memory_command_backend(self._workspace),
@@ -662,7 +683,12 @@ class OhmoSessionRuntimePool:
         return normalized
 
     def _register_gateway_tools(self, bundle: RuntimeBundle) -> None:
+        self._unregister_group_tool(bundle)
+
+    def _register_group_tool(self, bundle: RuntimeBundle) -> None:
         if self._create_feishu_group is None or not hasattr(bundle, "tool_registry"):
+            return
+        if bundle.tool_registry is None or bundle.tool_registry.get(_GROUP_TOOL_NAME) is not None:
             return
         bundle.tool_registry.register(
             OhmoCreateFeishuGroupTool(
@@ -671,6 +697,13 @@ class OhmoSessionRuntimePool:
                 publish_group_welcome=self._publish_group_welcome,
             )
         )
+
+    @staticmethod
+    def _unregister_group_tool(bundle: RuntimeBundle) -> None:
+        registry = getattr(bundle, "tool_registry", None)
+        tools = getattr(registry, "_tools", None)
+        if isinstance(tools, dict):
+            tools.pop(_GROUP_TOOL_NAME, None)
 
     def _set_group_request_context(
         self,
@@ -682,7 +715,11 @@ class OhmoSessionRuntimePool:
         previous = metadata.get("ohmo_group_request", _NO_GROUP_REQUEST)
         if not message.metadata.get("_ohmo_group_command"):
             metadata.pop("ohmo_group_request", None)
+            metadata.pop("_suppress_next_user_goal", None)
+            self._unregister_group_tool(bundle)
             return _NO_GROUP_REQUEST
+        self._register_group_tool(bundle)
+        metadata["_suppress_next_user_goal"] = True
         metadata["ohmo_group_request"] = {
             "channel": message.channel,
             "chat_type": str(message.metadata.get("chat_type") or "").strip().lower(),
@@ -698,10 +735,10 @@ class OhmoSessionRuntimePool:
     @staticmethod
     def _restore_group_request_context(bundle: RuntimeBundle, previous: object) -> None:
         metadata = getattr(bundle.engine, "tool_metadata", {})
-        if previous is _NO_GROUP_REQUEST:
-            metadata.pop("ohmo_group_request", None)
-        else:
-            metadata["ohmo_group_request"] = previous
+        del previous
+        metadata.pop("ohmo_group_request", None)
+        metadata.pop("_suppress_next_user_goal", None)
+        OhmoSessionRuntimePool._unregister_group_tool(bundle)
 
 
 def _content_snippet(text: str, *, limit: int = 160) -> str:
@@ -710,6 +747,69 @@ def _content_snippet(text: str, *, limit: int = 160) -> str:
     if len(normalized) <= limit:
         return normalized
     return normalized[: limit - 3] + "..."
+
+
+def _sanitize_snapshot_messages(raw_messages: object) -> list[dict[str, object]] | None:
+    """Validate and sanitize restored messages from persisted ohmo snapshots."""
+    if not raw_messages or not isinstance(raw_messages, list):
+        return None
+    messages: list[ConversationMessage] = []
+    for raw in raw_messages:
+        try:
+            messages.append(ConversationMessage.model_validate(raw))
+        except Exception:
+            logger.warning("ohmo runtime skipped invalid restored message while sanitizing snapshot")
+    return [message.model_dump(mode="json") for message in _sanitize_group_command_prompts(messages)]
+
+
+def _sanitize_group_command_prompts(messages: list[ConversationMessage]) -> list[ConversationMessage]:
+    """Replace internal /group tool-driving prompts with durable user-facing history."""
+    return [_sanitize_group_command_prompt(message) for message in messages]
+
+
+def _sanitize_group_command_prompt(message: ConversationMessage) -> ConversationMessage:
+    changed = False
+    content: list[TextBlock | ImageBlock] = []
+    for block in message.content:
+        if isinstance(block, TextBlock) and _GROUP_AGENT_PROMPT_PREFIX in block.text:
+            content.append(TextBlock(text=_format_group_command_history_note(block.text)))
+            changed = True
+        else:
+            content.append(block)
+    if not changed:
+        return message
+    return message.model_copy(update={"content": content})
+
+
+def _format_group_command_history_note(prompt: str) -> str:
+    raw_request = prompt
+    if _GROUP_AGENT_PROMPT_REQUEST_MARKER in prompt:
+        raw_request = prompt.split(_GROUP_AGENT_PROMPT_REQUEST_MARKER, 1)[1].strip()
+    raw_request = raw_request.strip() or "(empty request)"
+    return f"[Handled /group request]\nThe user asked ohmo to create a Feishu group:\n{raw_request}"
+
+
+def _sanitize_group_command_metadata(raw_metadata: object) -> object:
+    """Remove internal /group tool-driving text from compact carry-over metadata."""
+    if not isinstance(raw_metadata, dict):
+        return raw_metadata
+    sanitized = dict(raw_metadata)
+    for key in _GROUP_METADATA_KEYS:
+        if key in sanitized:
+            sanitized[key] = _sanitize_group_command_metadata_value(sanitized[key])
+    return sanitized
+
+
+def _sanitize_group_command_metadata_value(value: object) -> object:
+    if isinstance(value, str):
+        if _GROUP_AGENT_PROMPT_PREFIX in value:
+            return _format_group_command_history_note(value)
+        return value
+    if isinstance(value, dict):
+        return {key: _sanitize_group_command_metadata_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_sanitize_group_command_metadata_value(item) for item in value]
+    return value
 
 
 def _summarize_tool_input(tool_name: str, tool_input: dict[str, object]) -> str:
