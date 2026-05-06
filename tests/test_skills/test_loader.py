@@ -6,6 +6,7 @@ import textwrap
 from pathlib import Path
 
 from openharness.skills import get_user_skills_dir, load_skill_registry
+from openharness.skills.bundled import _parse_frontmatter as parse_bundled_frontmatter
 from openharness.skills.loader import _parse_skill_markdown as parse_skill_markdown
 
 
@@ -140,3 +141,78 @@ def test_parse_malformed_yaml_falls_back():
     # the first non-heading, non-delimiter line wins.  The important thing
     # is that a YAMLError doesn't crash the loader.
     assert isinstance(desc, str) and desc
+
+
+# --- bundled skill frontmatter tests ---
+#
+# The bundled skill loader used to use a naive line-by-line parser that did
+# not understand YAML block scalars (``>`` / ``|``) — a partial fix landed in
+# #96 only on the user-skill side. These cases pin the bundled loader to the
+# same behavior so future bundled skills with frontmatter parse correctly.
+
+
+def test_bundled_frontmatter_folded_block_scalar():
+    """Bundled loader expands folded block scalars the same way user loader does."""
+    content = textwrap.dedent("""\
+        ---
+        name: bundled-folded
+        description: >
+          A long folded description spanning
+          multiple lines that should join with spaces.
+        ---
+
+        # Body
+    """)
+    name, desc = parse_bundled_frontmatter("fallback", content)
+    assert name == "bundled-folded"
+    assert "A long folded description spanning" in desc
+    assert "join with spaces" in desc
+    assert "\n" not in desc
+
+
+def test_bundled_frontmatter_literal_block_scalar():
+    """Bundled loader preserves literal-scalar newlines."""
+    content = textwrap.dedent("""\
+        ---
+        name: bundled-literal
+        description: |
+          Line one.
+          Line two.
+        ---
+
+        # Body
+    """)
+    name, desc = parse_bundled_frontmatter("fallback", content)
+    assert name == "bundled-literal"
+    assert "Line one." in desc
+    assert "Line two." in desc
+
+
+def test_bundled_frontmatter_inline_description():
+    """Inline frontmatter description still works on the bundled side."""
+    content = textwrap.dedent("""\
+        ---
+        name: bundled-inline
+        description: A short bundled description
+        ---
+
+        # Body
+    """)
+    name, desc = parse_bundled_frontmatter("fallback", content)
+    assert name == "bundled-inline"
+    assert desc == "A short bundled description"
+
+
+def test_bundled_no_description_uses_bundled_prefix():
+    """When nothing supplies a description, the bundled fallback prefix is used."""
+    name, desc = parse_bundled_frontmatter("fallback", "# OnlyHeading\n")
+    assert name == "OnlyHeading"
+    assert desc == "Bundled skill: OnlyHeading"
+
+
+def test_bundled_fallback_heading_and_paragraph():
+    """Without frontmatter, the bundled loader falls back to heading + first paragraph."""
+    content = "# Bundled Skill\nThis is a bundled body description.\n"
+    name, desc = parse_bundled_frontmatter("fallback", content)
+    assert name == "Bundled Skill"
+    assert desc == "This is a bundled body description."
