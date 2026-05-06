@@ -6,6 +6,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 
+from openharness.channels.bus.events import InboundMessage
 from openharness.channels.bus.events import OutboundMessage
 from openharness.channels.bus.queue import MessageBus
 
@@ -92,6 +93,13 @@ class OhmoGatewayBridge:
             if message.content.strip() == "/restart":
                 await self._handle_restart(message, session_key)
                 continue
+            group_args = _parse_group_command(message.content)
+            if group_args is not None:
+                prepared = await self._prepare_group_prompt_message(message, session_key, group_args)
+                if prepared is None:
+                    continue
+                message = prepared
+                session_key = session_key_for_message(message)
             await self._interrupt_session(
                 session_key,
                 reason="replaced by a newer user message",
@@ -148,6 +156,58 @@ class OhmoGatewayBridge:
             if asyncio.iscoroutine(result):
                 await result
 
+    async def _prepare_group_prompt_message(
+        self,
+        message,
+        session_key: str,
+        args: str,
+    ) -> InboundMessage | None:
+        """Convert a private /group command into an agent task."""
+        if message.channel != "feishu":
+            await self._publish_command_reply(
+                message,
+                session_key,
+                "/group 当前只支持飞书。\n/group is currently only available for Feishu.",
+            )
+            return None
+
+        chat_type = str(message.metadata.get("chat_type") or "").strip().lower()
+        is_private = chat_type in {"p2p", "private", "im", "direct"} or (
+            not chat_type and str(message.chat_id) == str(message.sender_id)
+        )
+        if not is_private:
+            await self._publish_command_reply(
+                message,
+                session_key,
+                "请在和 ohmo 的私聊里使用 /group 创建新群。\nUse /group in a private chat with ohmo to create a new group.",
+            )
+            return None
+
+        metadata = dict(message.metadata)
+        metadata["_ohmo_group_command"] = True
+        metadata["_ohmo_group_raw_request"] = args
+        prompt = _build_group_agent_prompt(args)
+        return InboundMessage(
+            channel=message.channel,
+            sender_id=message.sender_id,
+            chat_id=message.chat_id,
+            content=prompt,
+            timestamp=message.timestamp,
+            media=list(message.media),
+            metadata=metadata,
+            session_key_override=message.session_key_override,
+        )
+
+    async def _publish_command_reply(self, message, session_key: str, content: str) -> None:
+        await self._bus.publish_outbound(
+            OutboundMessage(
+                channel=message.channel,
+                chat_id=message.chat_id,
+                content=content,
+                metadata={"_session_key": session_key},
+            )
+        )
+
     async def _interrupt_session(
         self,
         session_key: str,
@@ -169,10 +229,15 @@ class OhmoGatewayBridge:
         return True
 
     async def _process_message(self, message, session_key: str) -> None:
-        # Preserve inbound message_id so channels can reply in-thread
+        # Preserve thread metadata only for shared chats. Feishu p2p replies
+        # should stay as normal private messages, not topic replies.
         inbound_meta = {
-            k: message.metadata[k] for k in ("message_id", "thread_id") if k in message.metadata
+            k: message.metadata[k] for k in ("thread_id",) if k in message.metadata
         }
+        chat_type = str(message.metadata.get("chat_type") or "").lower()
+        if chat_type == "group" or inbound_meta.get("thread_id"):
+            if "message_id" in message.metadata:
+                inbound_meta["message_id"] = message.metadata["message_id"]
         try:
             reply = ""
             async for update in self._runtime_pool.stream_message(message, session_key):
@@ -245,3 +310,27 @@ class OhmoGatewayBridge:
         if current is task:
             self._session_tasks.pop(session_key, None)
         self._session_cancel_reasons.pop(session_key, None)
+
+
+def _parse_group_command(content: str) -> str | None:
+    stripped = content.strip()
+    parts = stripped.split(maxsplit=1)
+    if not parts or parts[0] != "/group":
+        return None
+    if len(parts) == 1:
+        return ""
+    return parts[1].strip()
+
+
+def _build_group_agent_prompt(raw_request: str) -> str:
+    request = raw_request.strip() or "(user did not provide details)"
+    return (
+        "The user invoked `/group` from a Feishu private chat.\n"
+        "Your task is to create a dedicated Feishu group for this request.\n\n"
+        "Use the `ohmo_create_feishu_group` tool exactly once if you can infer a safe group name. "
+        "You, the model, must decide the final `name`, optional `repo`, and optional `cwd` from the user's "
+        "natural-language request and available local context. If the cwd is not obvious, inspect the filesystem "
+        "before calling the tool. If there is not enough information to choose safely, ask one concise clarification "
+        "instead of calling the tool. Do not create the group via bash or direct API calls.\n\n"
+        f"User /group request:\n{request}"
+    )
