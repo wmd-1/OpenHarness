@@ -8,23 +8,35 @@ from pathlib import Path
 
 import pytest
 
+from openharness.api.client import ApiMessageCompleteEvent
 from openharness.api.usage import UsageSnapshot
 from openharness.bridge import get_bridge_manager
 from openharness.channels.bus.events import InboundMessage
 from openharness.channels.bus.queue import MessageBus
 from openharness.commands import CommandResult
 from openharness.commands.registry import SlashCommand, create_default_command_registry
-from openharness.config.settings import Settings
+from openharness.config.settings import PermissionSettings, Settings
 from openharness.engine.messages import ConversationMessage, ImageBlock, TextBlock, ToolUseBlock
-from openharness.engine.stream_events import AssistantTextDelta, CompactProgressEvent, ErrorEvent, ToolExecutionStarted
+from openharness.engine.query_engine import QueryEngine
+from openharness.engine.stream_events import (
+    AssistantTextDelta,
+    CompactProgressEvent,
+    ErrorEvent,
+    ToolExecutionCompleted,
+    ToolExecutionStarted,
+)
 from openharness.memory import add_memory_entry as add_project_memory_entry
 from openharness.memory import list_memory_files as list_project_memory_files
+from openharness.permissions import PermissionChecker, PermissionMode
+from openharness.tools.base import ToolExecutionContext, ToolRegistry
 
 from ohmo.gateway.bridge import OhmoGatewayBridge, _format_gateway_error
 from ohmo.gateway.config import save_gateway_config
+from ohmo.gateway.group_tool import OhmoCreateFeishuGroupInput, OhmoCreateFeishuGroupTool
 from ohmo.gateway.models import GatewayConfig, GatewayState
 from ohmo.gateway.runtime import OhmoSessionRuntimePool, _build_inbound_user_message, _format_channel_progress
 from ohmo.gateway.service import OhmoGatewayService, gateway_status, stop_gateway_process
+from ohmo.group_registry import load_managed_group_record, save_managed_group_record
 from ohmo.memory import add_memory_entry as add_ohmo_memory_entry
 from ohmo.memory import list_memory_files as list_ohmo_memory_files
 from ohmo.gateway.router import session_key_for_message
@@ -32,19 +44,31 @@ from ohmo.session_storage import save_session_snapshot
 from ohmo.workspace import get_gateway_restart_notice_path, initialize_workspace
 
 
-def test_gateway_router_uses_thread_and_sender_when_present():
+def test_gateway_router_uses_thread_and_sender_for_group_when_present():
     message = InboundMessage(
         channel="slack",
         sender_id="u1",
         chat_id="c1",
         content="hello",
         timestamp=datetime.utcnow(),
-        metadata={"thread_ts": "t1"},
+        metadata={"thread_ts": "t1", "chat_type": "group"},
     )
     assert session_key_for_message(message) == "slack:c1:t1:u1"
 
 
-def test_gateway_router_falls_back_to_chat_and_sender_scope():
+def test_gateway_router_keeps_private_chat_scope_for_legacy_sessions():
+    message = InboundMessage(
+        channel="feishu",
+        sender_id="u1",
+        chat_id="ou_legacy",
+        content="hello",
+        timestamp=datetime.utcnow(),
+        metadata={"chat_type": "p2p"},
+    )
+    assert session_key_for_message(message) == "feishu:ou_legacy"
+
+
+def test_gateway_router_falls_back_to_chat_scope_when_chat_type_unknown():
     message = InboundMessage(
         channel="telegram",
         sender_id="u1",
@@ -52,7 +76,7 @@ def test_gateway_router_falls_back_to_chat_and_sender_scope():
         content="hello",
         timestamp=datetime.utcnow(),
     )
-    assert session_key_for_message(message) == "telegram:chat-1:u1"
+    assert session_key_for_message(message) == "telegram:chat-1"
 
 
 def test_gateway_router_separates_senders_in_same_chat_thread():
@@ -62,7 +86,7 @@ def test_gateway_router_separates_senders_in_same_chat_thread():
         chat_id="shared-chat",
         content="hello",
         timestamp=datetime.utcnow(),
-        metadata={"thread_ts": "thread-1"},
+        metadata={"thread_ts": "thread-1", "chat_type": "group"},
     )
     second = InboundMessage(
         channel="slack",
@@ -70,10 +94,31 @@ def test_gateway_router_separates_senders_in_same_chat_thread():
         chat_id="shared-chat",
         content="hello",
         timestamp=datetime.utcnow(),
-        metadata={"thread_ts": "thread-1"},
+        metadata={"thread_ts": "thread-1", "chat_type": "group"},
     )
     assert session_key_for_message(first) == "slack:shared-chat:thread-1:alice"
     assert session_key_for_message(second) == "slack:shared-chat:thread-1:bob"
+
+
+def test_gateway_router_separates_senders_in_same_group_without_thread():
+    first = InboundMessage(
+        channel="feishu",
+        sender_id="alice",
+        chat_id="oc_shared",
+        content="hello",
+        timestamp=datetime.utcnow(),
+        metadata={"chat_type": "group"},
+    )
+    second = InboundMessage(
+        channel="feishu",
+        sender_id="bob",
+        chat_id="oc_shared",
+        content="hello",
+        timestamp=datetime.utcnow(),
+        metadata={"chat_type": "group"},
+    )
+    assert session_key_for_message(first) == "feishu:oc_shared:alice"
+    assert session_key_for_message(second) == "feishu:oc_shared:bob"
 
 
 def test_gateway_error_formats_claude_refresh_failure():
@@ -149,7 +194,93 @@ def test_stop_gateway_process_kills_matching_workspace_processes(tmp_path, monke
 
 
 @pytest.mark.asyncio
-async def test_runtime_pool_restores_messages_for_sender_scoped_session_key(tmp_path, monkeypatch):
+async def test_runtime_pool_restores_messages_for_private_legacy_session_key(tmp_path, monkeypatch):
+    workspace = tmp_path / ".ohmo-home"
+    initialize_workspace(workspace)
+    save_session_snapshot(
+        cwd=tmp_path,
+        workspace=workspace,
+        model="gpt-5.4",
+        system_prompt="system",
+        messages=[ConversationMessage.from_user_text("remember private chat")],
+        usage=UsageSnapshot(),
+        session_id="sess123",
+        session_key="feishu:chat-1",
+    )
+
+    captured: dict[str, object] = {}
+
+    async def fake_build_runtime(**kwargs):
+        captured["restore_messages"] = kwargs.get("restore_messages")
+        return SimpleNamespace(
+            engine=SimpleNamespace(set_system_prompt=lambda prompt: None, messages=[]),
+            session_id="newsession",
+        )
+
+    async def fake_start_runtime(bundle):
+        return None
+
+    monkeypatch.setattr("ohmo.gateway.runtime.build_runtime", fake_build_runtime)
+    monkeypatch.setattr("ohmo.gateway.runtime.start_runtime", fake_start_runtime)
+
+    pool = OhmoSessionRuntimePool(cwd=tmp_path, workspace=workspace, provider_profile="codex")
+    bundle = await pool.get_bundle("feishu:chat-1")
+
+    assert captured["restore_messages"] is not None
+    assert bundle.session_id == "sess123"
+
+
+@pytest.mark.asyncio
+async def test_runtime_pool_uses_managed_group_cwd_binding(tmp_path, monkeypatch):
+    workspace = tmp_path / ".ohmo-home"
+    project = tmp_path / "OpenHarness-new"
+    project.mkdir()
+    initialize_workspace(workspace)
+    save_managed_group_record(
+        workspace=workspace,
+        channel="feishu",
+        chat_id="oc_group",
+        owner_open_id="ou_user",
+        name="HKUDS/OpenHarness",
+        cwd=str(project),
+        repo="HKUDS/OpenHarness",
+        binding_status="bound",
+    )
+
+    captured: dict[str, object] = {}
+
+    async def fake_build_runtime(**kwargs):
+        captured["cwd"] = kwargs.get("cwd")
+        return SimpleNamespace(
+            engine=SimpleNamespace(set_system_prompt=lambda prompt: None, messages=[]),
+            session_id="newsession",
+        )
+
+    async def fake_start_runtime(bundle):
+        return None
+
+    monkeypatch.setattr("ohmo.gateway.runtime.build_runtime", fake_build_runtime)
+    monkeypatch.setattr("ohmo.gateway.runtime.start_runtime", fake_start_runtime)
+
+    pool = OhmoSessionRuntimePool(cwd=tmp_path, workspace=workspace, provider_profile="codex")
+    message = InboundMessage(
+        channel="feishu",
+        sender_id="ou_user",
+        chat_id="oc_group",
+        content="hello",
+        metadata={"chat_type": "group"},
+    )
+    bundle = await pool.get_bundle(
+        "feishu:oc_group:ou_user",
+        cwd=pool._cwd_for_message(message),
+    )
+
+    assert captured["cwd"] == str(project.resolve())
+    assert bundle.session_id == "newsession"
+
+
+@pytest.mark.asyncio
+async def test_runtime_pool_restores_messages_for_group_sender_scoped_session_key(tmp_path, monkeypatch):
     workspace = tmp_path / ".ohmo-home"
     initialize_workspace(workspace)
     save_session_snapshot(
@@ -186,7 +317,7 @@ async def test_runtime_pool_restores_messages_for_sender_scoped_session_key(tmp_
 
 
 @pytest.mark.asyncio
-async def test_runtime_pool_does_not_restore_other_sender_session_key(tmp_path, monkeypatch):
+async def test_runtime_pool_does_not_restore_other_group_sender_session_key(tmp_path, monkeypatch):
     workspace = tmp_path / ".ohmo-home"
     initialize_workspace(workspace)
     save_session_snapshot(
@@ -924,6 +1055,74 @@ async def test_gateway_bridge_publishes_progress_updates():
 
 
 @pytest.mark.asyncio
+async def test_gateway_bridge_does_not_thread_private_feishu_replies():
+    bus = MessageBus()
+
+    class FakeRuntimePool:
+        async def stream_message(self, message, session_key):
+            yield SimpleNamespace(kind="progress", text="🤔 想一想…", metadata={"_progress": True})
+            yield SimpleNamespace(kind="final", text="Done", metadata={})
+
+    bridge = OhmoGatewayBridge(bus=bus, runtime_pool=FakeRuntimePool())
+    task = asyncio.create_task(bridge.run())
+    try:
+        await bus.publish_inbound(
+            InboundMessage(
+                channel="feishu",
+                sender_id="ou_1",
+                chat_id="ou_1",
+                content="hi",
+                metadata={"chat_type": "p2p", "message_id": "om_private"},
+            )
+        )
+        progress = await asyncio.wait_for(bus.consume_outbound(), timeout=1.0)
+        final = await asyncio.wait_for(bus.consume_outbound(), timeout=1.0)
+    finally:
+        bridge.stop()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    assert "message_id" not in progress.metadata
+    assert "message_id" not in final.metadata
+    assert final.metadata["_session_key"] == "feishu:ou_1"
+
+
+@pytest.mark.asyncio
+async def test_gateway_bridge_threads_group_feishu_replies():
+    bus = MessageBus()
+
+    class FakeRuntimePool:
+        async def stream_message(self, message, session_key):
+            yield SimpleNamespace(kind="progress", text="🤔 想一想…", metadata={"_progress": True})
+            yield SimpleNamespace(kind="final", text="Done", metadata={})
+
+    bridge = OhmoGatewayBridge(bus=bus, runtime_pool=FakeRuntimePool())
+    task = asyncio.create_task(bridge.run())
+    try:
+        await bus.publish_inbound(
+            InboundMessage(
+                channel="feishu",
+                sender_id="ou_1",
+                chat_id="oc_group",
+                content="hi",
+                metadata={"chat_type": "group", "message_id": "om_group", "thread_id": "thread_1"},
+            )
+        )
+        progress = await asyncio.wait_for(bus.consume_outbound(), timeout=1.0)
+        final = await asyncio.wait_for(bus.consume_outbound(), timeout=1.0)
+    finally:
+        bridge.stop()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    assert progress.metadata["message_id"] == "om_group"
+    assert final.metadata["message_id"] == "om_group"
+    assert final.metadata["_session_key"] == "feishu:oc_group:thread_1:ou_1"
+
+
+@pytest.mark.asyncio
 async def test_gateway_bridge_logs_inbound_and_final(caplog):
     bus = MessageBus()
 
@@ -1025,7 +1224,264 @@ async def test_gateway_bridge_restart_command_requests_gateway_restart():
         "🔄 正在重启 gateway，马上回来。\n"
         "Restarting the gateway now. I'll be back in a moment."
     )
-    assert restart_payloads == [("feishu", "c1", "feishu:c1:u1")]
+    assert restart_payloads == [("feishu", "c1", "feishu:c1")]
+
+
+@pytest.mark.asyncio
+async def test_gateway_bridge_group_command_routes_to_agent_tool_prompt():
+    bus = MessageBus()
+    captured: list[tuple[InboundMessage, str]] = []
+
+    class FakeRuntimePool:
+        async def stream_message(self, message, session_key):
+            captured.append((message, session_key))
+            yield SimpleNamespace(kind="final", text="agent handled group request", metadata={})
+
+    bridge = OhmoGatewayBridge(bus=bus, runtime_pool=FakeRuntimePool())
+    task = asyncio.create_task(bridge.run())
+    try:
+        await bus.publish_inbound(
+            InboundMessage(
+                channel="feishu",
+                sender_id="ou_user",
+                chat_id="ou_user",
+                content="/group 帮我创建一个群聊专门处理HKUDS/OpenHarness的问题吧，绑定cwd就在~/OpenHarness-new",
+                metadata={"chat_type": "p2p", "sender_display_name": "Tang"},
+            )
+        )
+        reply = await asyncio.wait_for(bus.consume_outbound(), timeout=1.0)
+    finally:
+        bridge.stop()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    assert reply.content == "agent handled group request"
+    assert len(captured) == 1
+    message, session_key = captured[0]
+    assert session_key == "feishu:ou_user"
+    assert "ohmo_create_feishu_group" in message.content
+    assert "HKUDS/OpenHarness" in message.content
+    assert "~/OpenHarness-new" in message.content
+    assert message.metadata["_ohmo_group_command"] is True
+    assert message.metadata["_ohmo_group_raw_request"].startswith("帮我创建一个群聊")
+
+
+@pytest.mark.asyncio
+async def test_ohmo_create_feishu_group_tool_creates_and_binds_metadata(tmp_path):
+    project = tmp_path / "OpenHarness-new"
+    project.mkdir()
+    created: list[tuple[str, str]] = []
+    welcomes: list[tuple[str, str, str]] = []
+
+    async def fake_create_group(user_open_id: str, name: str) -> str:
+        created.append((user_open_id, name))
+        return "oc_project_group"
+
+    async def fake_publish_welcome(chat_id: str, content: str, owner_open_id: str) -> None:
+        welcomes.append((chat_id, content, owner_open_id))
+
+    tool = OhmoCreateFeishuGroupTool(
+        workspace=tmp_path,
+        create_group=fake_create_group,
+        publish_group_welcome=fake_publish_welcome,
+    )
+    result = await tool.execute(
+        OhmoCreateFeishuGroupInput(
+            name="HKUDS/OpenHarness",
+            cwd=str(project),
+            repo="HKUDS/OpenHarness",
+            reason="The request names the repo and cwd directly.",
+        ),
+        ToolExecutionContext(
+            cwd=tmp_path,
+            metadata={
+                "ohmo_group_request": {
+                    "channel": "feishu",
+                    "chat_type": "p2p",
+                    "sender_id": "ou_user",
+                    "source_chat_id": "ou_user",
+                    "source_session_key": "feishu:ou_user",
+                    "sender_display_name": "Tang",
+                    "raw_request": "帮我创建 OpenHarness 群",
+                    "used": False,
+                }
+            },
+        ),
+    )
+
+    assert result.is_error is False
+    assert created == [("ou_user", "HKUDS/OpenHarness")]
+    assert len(welcomes) == 1
+    assert welcomes[0][0] == "oc_project_group"
+    assert welcomes[0][2] == "ou_user"
+    assert "已绑定工作目录" in welcomes[0][1]
+    record = load_managed_group_record(workspace=tmp_path, channel="feishu", chat_id="oc_project_group")
+    assert record is not None
+    assert record["owner_open_id"] == "ou_user"
+    assert record["name"] == "HKUDS/OpenHarness"
+    assert record["cwd"] == str(project.resolve())
+    assert record["repo"] == "HKUDS/OpenHarness"
+    assert record["binding_status"] == "bound"
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_can_create_group_via_ohmo_group_tool(tmp_path):
+    project = tmp_path / "ClawTeam"
+    project.mkdir()
+    created: list[tuple[str, str]] = []
+
+    class FakeApiClient:
+        def __init__(self):
+            self.requests = []
+            self.responses = [
+                ConversationMessage(
+                    role="assistant",
+                    content=[
+                        ToolUseBlock(
+                            id="toolu_group",
+                            name="ohmo_create_feishu_group",
+                            input={
+                                "name": "HKUDS/ClawTeam",
+                                "cwd": str(project),
+                                "repo": "HKUDS/ClawTeam",
+                                "reason": "The user asked for a ClawTeam project group.",
+                            },
+                        )
+                    ],
+                ),
+                ConversationMessage(
+                    role="assistant",
+                    content=[TextBlock(text="已创建 HKUDS/ClawTeam 群。")],
+                ),
+            ]
+
+        async def stream_message(self, request):
+            self.requests.append(request)
+            yield ApiMessageCompleteEvent(
+                message=self.responses.pop(0),
+                usage=UsageSnapshot(input_tokens=1, output_tokens=1),
+                stop_reason=None,
+            )
+
+    async def fake_create_group(user_open_id: str, name: str) -> str:
+        created.append((user_open_id, name))
+        return "oc_clawteam"
+
+    registry = ToolRegistry()
+    registry.register(OhmoCreateFeishuGroupTool(workspace=tmp_path, create_group=fake_create_group))
+    client = FakeApiClient()
+    engine = QueryEngine(
+        api_client=client,
+        tool_registry=registry,
+        permission_checker=PermissionChecker(PermissionSettings(mode=PermissionMode.DEFAULT)),
+        cwd=tmp_path,
+        model="fake-model",
+        system_prompt="system",
+        tool_metadata={
+            "ohmo_group_request": {
+                "channel": "feishu",
+                "chat_type": "p2p",
+                "sender_id": "ou_user",
+                "source_chat_id": "ou_user",
+                "source_session_key": "feishu:ou_user",
+                "raw_request": "帮我创建一个群聊专门处理HKUDS/ClawTeam的问题吧",
+                "used": False,
+            }
+        },
+    )
+
+    events = [event async for event in engine.submit_message("create group")]
+
+    completed = [event for event in events if isinstance(event, ToolExecutionCompleted)]
+    assert len(completed) == 1
+    assert completed[0].tool_name == "ohmo_create_feishu_group"
+    assert completed[0].is_error is False
+    assert created == [("ou_user", "HKUDS/ClawTeam")]
+    assert "ohmo_create_feishu_group" in {tool["name"] for tool in client.requests[0].tools}
+    record = load_managed_group_record(workspace=tmp_path, channel="feishu", chat_id="oc_clawteam")
+    assert record is not None
+    assert record["cwd"] == str(project.resolve())
+    assert record["repo"] == "HKUDS/ClawTeam"
+
+
+@pytest.mark.asyncio
+async def test_ohmo_create_feishu_group_tool_rejects_without_slash_group_context(tmp_path):
+    async def fake_create_group(user_open_id: str, name: str) -> str:
+        raise AssertionError("tool should reject before creating a group")
+
+    tool = OhmoCreateFeishuGroupTool(workspace=tmp_path, create_group=fake_create_group)
+    result = await tool.execute(
+        OhmoCreateFeishuGroupInput(name="HKUDS/OpenHarness"),
+        ToolExecutionContext(cwd=tmp_path, metadata={}),
+    )
+
+    assert result.is_error is True
+    assert "only run immediately" in result.output
+
+
+@pytest.mark.asyncio
+async def test_gateway_bridge_group_command_rejects_group_chat(tmp_path):
+    bus = MessageBus()
+
+    class FakeRuntimePool:
+        async def stream_message(self, message, session_key):
+            raise AssertionError("/group should not enter the agent runtime")
+
+    bridge = OhmoGatewayBridge(bus=bus, runtime_pool=FakeRuntimePool())
+    task = asyncio.create_task(bridge.run())
+    try:
+        await bus.publish_inbound(
+            InboundMessage(
+                channel="feishu",
+                sender_id="ou_user",
+                chat_id="oc_existing",
+                content="/group New Group",
+                metadata={"chat_type": "group"},
+            )
+        )
+        reply = await asyncio.wait_for(bus.consume_outbound(), timeout=1.0)
+    finally:
+        bridge.stop()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    assert "私聊" in reply.content
+
+
+@pytest.mark.asyncio
+async def test_gateway_bridge_group_command_without_details_still_routes_to_agent():
+    bus = MessageBus()
+    captured: list[InboundMessage] = []
+
+    class FakeRuntimePool:
+        async def stream_message(self, message, session_key):
+            del session_key
+            captured.append(message)
+            yield SimpleNamespace(kind="final", text="need details", metadata={})
+
+    bridge = OhmoGatewayBridge(bus=bus, runtime_pool=FakeRuntimePool())
+    task = asyncio.create_task(bridge.run())
+    try:
+        await bus.publish_inbound(
+            InboundMessage(
+                channel="feishu",
+                sender_id="ou_user",
+                chat_id="ou_user",
+                content="/group",
+                metadata={"chat_type": "p2p"},
+            )
+        )
+        reply = await asyncio.wait_for(bus.consume_outbound(), timeout=1.0)
+    finally:
+        bridge.stop()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    assert reply.content == "need details"
+    assert "(user did not provide details)" in captured[0].content
 
 
 @pytest.mark.asyncio

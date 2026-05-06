@@ -39,6 +39,10 @@ class _FeishuSenderInfo:
     display_name: str
 
 
+class FeishuApiError(RuntimeError):
+    """Raised when Feishu returns an unsuccessful API response."""
+
+
 def _extract_share_card_content(content_json: dict, msg_type: str) -> str:
     """Extract text representation from share cards and interactive messages."""
     parts = []
@@ -811,6 +815,71 @@ class FeishuChannel(BaseChannel):
             logger.error("Error sending Feishu %s message: %s", msg_type, e)
             return False
 
+    @staticmethod
+    def _format_response_error(action: str, response: Any) -> str:
+        log_id = response.get_log_id() if hasattr(response, "get_log_id") else ""
+        return (
+            f"{action} failed: code={getattr(response, 'code', '')}, "
+            f"msg={getattr(response, 'msg', '')}, log_id={log_id}"
+        )
+
+    def _create_managed_group_sync(self, user_open_id: str, name: str) -> str:
+        """Create a Feishu group containing the user and the app bot."""
+        from lark_oapi.api.im.v1 import CreateChatRequest, CreateChatRequestBody
+
+        if not self._client:
+            raise RuntimeError("Feishu client not initialized")
+        request = (
+            CreateChatRequest.builder()
+            .user_id_type("open_id")
+            .set_bot_manager(True)
+            .request_body(
+                CreateChatRequestBody.builder()
+                .name(name)
+                .user_id_list([user_open_id])
+                .chat_mode("group")
+                .chat_type("private")
+                .build()
+            )
+            .build()
+        )
+        response = self._client.im.v1.chat.create(request)
+        if not response.success():
+            raise FeishuApiError(self._format_response_error("create Feishu group", response))
+        chat_id = getattr(getattr(response, "data", None), "chat_id", None)
+        if not chat_id:
+            raise FeishuApiError("create Feishu group failed: response missing chat_id")
+        logger.info("Created Feishu managed group name=%r chat_id=%s", name, chat_id)
+        return str(chat_id)
+
+    async def create_managed_group(self, *, user_open_id: str, name: str) -> str:
+        """Create a Feishu group for a single user and the ohmo bot."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._create_managed_group_sync, user_open_id, name)
+
+    def _rename_group_sync(self, chat_id: str, name: str) -> None:
+        """Rename a Feishu group."""
+        from lark_oapi.api.im.v1 import UpdateChatRequest, UpdateChatRequestBody
+
+        if not self._client:
+            raise RuntimeError("Feishu client not initialized")
+        request = (
+            UpdateChatRequest.builder()
+            .user_id_type("open_id")
+            .chat_id(chat_id)
+            .request_body(UpdateChatRequestBody.builder().name(name).build())
+            .build()
+        )
+        response = self._client.im.v1.chat.update(request)
+        if not response.success():
+            raise FeishuApiError(self._format_response_error("rename Feishu group", response))
+        logger.info("Renamed Feishu group chat_id=%s name=%r", chat_id, name)
+
+    async def rename_group(self, *, chat_id: str, name: str) -> None:
+        """Rename a Feishu group."""
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._rename_group_sync, chat_id, name)
+
     async def send(self, msg: OutboundMessage) -> None:
         """Send a message through Feishu, including media (images/files) if present."""
         if not self._client:
@@ -820,7 +889,12 @@ class FeishuChannel(BaseChannel):
         try:
             receive_id_type = "chat_id" if msg.chat_id.startswith("oc_") else "open_id"
             loop = asyncio.get_running_loop()
-            reply_mid = msg.metadata.get("message_id")
+            chat_type = str(msg.metadata.get("chat_type") or "").lower()
+            reply_mid = (
+                msg.metadata.get("message_id")
+                if chat_type == "group" or msg.metadata.get("thread_id") or msg.metadata.get("root_id")
+                else None
+            )
 
             for file_path in msg.media:
                 if not os.path.isfile(file_path):
