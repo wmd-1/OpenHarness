@@ -8,7 +8,11 @@ from contextlib import AsyncExitStack
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from exceptiongroup import BaseExceptionGroup
+
+try:
+    BaseExceptionGroup
+except NameError:  # pragma: no cover - Python < 3.11 compatibility
+    from exceptiongroup import BaseExceptionGroup
 
 from openharness.mcp.client import McpClientManager, McpServerNotConnectedError
 from openharness.mcp.types import McpConnectionStatus, McpStdioServerConfig, McpToolInfo
