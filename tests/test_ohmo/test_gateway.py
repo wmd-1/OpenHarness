@@ -48,7 +48,7 @@ from ohmo.memory import add_memory_entry as add_ohmo_memory_entry
 from ohmo.memory import list_memory_files as list_ohmo_memory_files
 from ohmo.gateway.router import session_key_for_message
 from ohmo.session_storage import save_session_snapshot
-from ohmo.workspace import get_gateway_restart_notice_path, initialize_workspace
+from ohmo.workspace import get_gateway_restart_notice_path, get_skills_dir, initialize_workspace
 
 
 def test_gateway_router_uses_thread_and_sender_for_group_when_present():
@@ -2317,3 +2317,127 @@ async def test_runtime_pool_stream_message_handles_plugin_command_submit_prompt(
 
     assert submitted == ["plugin expanded prompt"]
     assert updates[-1].text == "plugin-done"
+
+
+@pytest.mark.asyncio
+async def test_runtime_pool_parses_group_slash_command_before_speaker_context(tmp_path, monkeypatch):
+    workspace = tmp_path / ".ohmo-home"
+    initialize_workspace(workspace)
+
+    class FakeEngine:
+        messages = []
+        total_usage = UsageSnapshot()
+        model = "gpt-5.4"
+
+        def set_system_prompt(self, prompt):
+            return None
+
+        async def submit_message(self, content):
+            raise AssertionError("group /skills should be handled by the command layer")
+
+    async def fake_build_runtime(**kwargs):
+        return SimpleNamespace(
+            engine=FakeEngine(),
+            session_id="sess123",
+            current_settings=lambda: SimpleNamespace(model="gpt-5.4"),
+            commands=create_default_command_registry(),
+            hook_summary=lambda: "",
+            mcp_summary=lambda: "",
+            plugin_summary=lambda: "",
+            cwd=str(tmp_path),
+            tool_registry=None,
+            app_state=None,
+            session_backend=None,
+            extra_skill_dirs=(),
+            extra_plugin_roots=(),
+            enforce_max_turns=False,
+        )
+
+    async def fake_start_runtime(bundle):
+        return None
+
+    monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setattr("ohmo.gateway.runtime.build_runtime", fake_build_runtime)
+    monkeypatch.setattr("ohmo.gateway.runtime.start_runtime", fake_start_runtime)
+
+    pool = OhmoSessionRuntimePool(cwd=tmp_path, workspace=workspace, provider_profile="codex")
+    message = InboundMessage(
+        channel="feishu",
+        sender_id="u1",
+        chat_id="c1",
+        content="/skills",
+        metadata={"chat_type": "group", "sender_display_name": "Tester"},
+    )
+    updates = [u async for u in pool.stream_message(message, "feishu:c1:u1")]
+
+    assert len(updates) == 1
+    assert updates[0].kind == "final"
+    assert updates[0].text.startswith("Available skills:")
+
+
+@pytest.mark.asyncio
+async def test_runtime_pool_stream_message_handles_ohmo_skill_slash_command(tmp_path, monkeypatch):
+    workspace = tmp_path / ".ohmo-home"
+    initialize_workspace(workspace)
+    skill_dir = get_skills_dir(workspace) / "quick-note"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: Quick Note\n"
+        "description: Capture a concise note.\n"
+        "---\n\n"
+        "# Quick Note\n\n"
+        "Summarize this: $ARGUMENTS\n",
+        encoding="utf-8",
+    )
+    submitted: list[object] = []
+
+    class FakeEngine:
+        messages = []
+        total_usage = UsageSnapshot()
+        model = "gpt-5.4"
+
+        def set_system_prompt(self, prompt):
+            return None
+
+        def set_model(self, model):
+            self.model = model
+
+        async def submit_message(self, content):
+            submitted.append(content)
+            yield AssistantTextDelta(text="skill-done")
+
+    async def fake_build_runtime(**kwargs):
+        return SimpleNamespace(
+            engine=FakeEngine(),
+            session_id="sess123",
+            current_settings=lambda: SimpleNamespace(model="gpt-5.4"),
+            commands=SimpleNamespace(lookup=lambda raw: None),
+            hook_summary=lambda: "",
+            mcp_summary=lambda: "",
+            plugin_summary=lambda: "",
+            cwd=str(tmp_path),
+            tool_registry=None,
+            app_state=None,
+            session_backend=None,
+            extra_skill_dirs=(str(get_skills_dir(workspace)),),
+            extra_plugin_roots=(),
+            enforce_max_turns=False,
+        )
+
+    async def fake_start_runtime(bundle):
+        return None
+
+    monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setattr("ohmo.gateway.runtime.build_runtime", fake_build_runtime)
+    monkeypatch.setattr("ohmo.gateway.runtime.start_runtime", fake_start_runtime)
+
+    pool = OhmoSessionRuntimePool(cwd=tmp_path, workspace=workspace, provider_profile="codex")
+    message = InboundMessage(channel="feishu", sender_id="u1", chat_id="c1", content="/quick-note hello")
+    updates = [u async for u in pool.stream_message(message, "feishu:c1")]
+
+    assert len(submitted) == 1
+    assert isinstance(submitted[0], str)
+    assert f"Base directory for this skill: {skill_dir.resolve()}" in submitted[0]
+    assert "Summarize this: hello" in submitted[0]
+    assert updates[-1].text == "skill-done"

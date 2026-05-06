@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 import openharness.commands.registry as registry_module
-from openharness.commands.registry import CommandContext, create_default_command_registry
+from openharness.commands.registry import CommandContext, create_default_command_registry, lookup_skill_slash_command
 from openharness.autopilot import RepoVerificationStep
 from openharness.config.paths import get_feedback_log_path, get_project_issue_file, get_project_pr_comments_file
 from openharness.config.settings import load_settings, save_settings, Settings
@@ -628,6 +628,101 @@ async def test_plugin_command_registers_and_submits_prompt(tmp_path: Path, monke
     result = await command.handler(args, _make_context(tmp_path))
 
     assert result.submit_prompt == "Base workflow\n\napi"
+
+
+@pytest.mark.asyncio
+async def test_bundled_user_invocable_skill_registers_as_slash_command(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    registry = create_default_command_registry()
+    command, args = registry.lookup("/skill-creator create a deployment skill")
+    assert command is not None
+    assert command.name == "skill-creator"
+
+    result = await command.handler(args, _make_context(tmp_path))
+
+    assert result.submit_prompt is not None
+    assert "Base directory for this skill:" in result.submit_prompt
+    assert "# skill-creator" in result.submit_prompt
+    assert "Arguments: create a deployment skill" in result.submit_prompt
+
+
+@pytest.mark.asyncio
+async def test_context_skill_slash_command_uses_folder_name(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    extra_root = tmp_path / "ohmo-skills"
+    skill_dir = extra_root / "pikastream-video-meeting"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: PikaStream Video Meeting\n"
+        "description: Join and summarize video meetings.\n"
+        "---\n\n"
+        "# PikaStream Video Meeting\n\n"
+        "Use the meeting workflow.\n",
+        encoding="utf-8",
+    )
+    context = _make_context(tmp_path)
+    context.extra_skill_dirs = (extra_root,)
+
+    parsed = lookup_skill_slash_command("/pikastream-video-meeting room 123", context)
+    assert parsed is not None
+    command, args = parsed
+
+    result = await command.handler(args, context)
+
+    assert command.name == "pikastream-video-meeting"
+    assert result.submit_prompt is not None
+    assert f"Base directory for this skill: {skill_dir.resolve()}" in result.submit_prompt
+    assert "PikaStream Video Meeting" in result.submit_prompt
+    assert "Arguments: room 123" in result.submit_prompt
+
+
+@pytest.mark.asyncio
+async def test_user_invocable_false_skill_is_not_slash_resolved(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    extra_root = tmp_path / "skills"
+    skill_dir = extra_root / "hidden"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "description: Model-only helper.\n"
+        "user-invocable: false\n"
+        "---\n\n"
+        "# Hidden\n",
+        encoding="utf-8",
+    )
+    context = _make_context(tmp_path)
+    context.extra_skill_dirs = (extra_root,)
+
+    assert lookup_skill_slash_command("/hidden", context) is None
+
+
+@pytest.mark.asyncio
+async def test_disable_model_invocation_skill_still_allows_user_slash(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    extra_root = tmp_path / "skills"
+    skill_dir = extra_root / "deploy"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "description: User-triggered deploy workflow.\n"
+        "disable-model-invocation: true\n"
+        "model: gpt-5.4\n"
+        "---\n\n"
+        "# Deploy\n\n$ARGUMENTS\n",
+        encoding="utf-8",
+    )
+    context = _make_context(tmp_path)
+    context.extra_skill_dirs = (extra_root,)
+
+    parsed = lookup_skill_slash_command("/deploy staging", context)
+    assert parsed is not None
+    command, args = parsed
+    result = await command.handler(args, context)
+
+    assert result.submit_prompt is not None
+    assert result.submit_model == "gpt-5.4"
+    assert "staging" in result.submit_prompt
 
 
 @pytest.mark.asyncio

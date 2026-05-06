@@ -40,6 +40,42 @@ def test_load_skill_registry_includes_user_skills(tmp_path: Path, monkeypatch):
     assert "Deployment workflow guidance" in deploy.content
 
 
+def test_user_skill_metadata_tracks_command_name_and_frontmatter_flags(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    skills_dir = get_user_skills_dir()
+    deploy_dir = skills_dir / "deploy-flow"
+    deploy_dir.mkdir(parents=True)
+    (deploy_dir / "SKILL.md").write_text(
+        textwrap.dedent("""\
+            ---
+            name: Deploy Flow
+            description: Release deployment workflow.
+            user-invocable: false
+            disable-model-invocation: true
+            model: gpt-5.4
+            argument-hint: ENV
+            ---
+
+            # Deploy Flow
+            """),
+        encoding="utf-8",
+    )
+
+    registry = load_skill_registry()
+    by_command = registry.get("deploy-flow")
+    by_display = registry.get("Deploy Flow")
+
+    assert by_command is not None
+    assert by_display is by_command
+    assert by_command.name == "Deploy Flow"
+    assert by_command.command_name == "deploy-flow"
+    assert by_command.display_name == "Deploy Flow"
+    assert by_command.user_invocable is False
+    assert by_command.disable_model_invocation is True
+    assert by_command.model == "gpt-5.4"
+    assert by_command.argument_hint == "ENV"
+
+
 # --- parse_skill_markdown unit tests ---
 
 

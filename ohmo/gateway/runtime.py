@@ -12,7 +12,7 @@ import os
 import string
 
 from openharness.channels.bus.events import InboundMessage
-from openharness.commands import CommandContext, CommandResult
+from openharness.commands import CommandContext, CommandResult, lookup_skill_slash_command
 from openharness.engine.messages import (
     ConversationMessage,
     ImageBlock,
@@ -213,6 +213,7 @@ class OhmoSessionRuntimePool:
         """Submit an inbound channel message and yield progress + final reply updates."""
         user_message = _build_inbound_user_message(message)
         user_prompt = user_message.text
+        command_prompt = (message.content or "").strip()
         session_cwd = self._cwd_for_message(message)
         bundle = await self.get_bundle(session_key, latest_user_prompt=user_prompt, cwd=session_cwd)
         logger.info(
@@ -224,7 +225,31 @@ class OhmoSessionRuntimePool:
             _content_snippet(user_prompt),
         )
 
-        parsed = bundle.commands.lookup(user_prompt)
+        command_context: CommandContext | None = None
+
+        def get_command_context() -> CommandContext:
+            nonlocal command_context
+            if command_context is None:
+                command_context = CommandContext(
+                    engine=bundle.engine,
+                    hooks_summary=getattr(bundle, "hook_summary", lambda: "")(),
+                    mcp_summary=getattr(bundle, "mcp_summary", lambda: "")(),
+                    plugin_summary=getattr(bundle, "plugin_summary", lambda: "")(),
+                    cwd=getattr(bundle, "cwd", str(self._cwd)),
+                    tool_registry=getattr(bundle, "tool_registry", None),
+                    app_state=getattr(bundle, "app_state", None),
+                    session_backend=getattr(bundle, "session_backend", self._session_backend),
+                    session_id=getattr(bundle, "session_id", None),
+                    extra_skill_dirs=getattr(bundle, "extra_skill_dirs", ()),
+                    extra_plugin_roots=getattr(bundle, "extra_plugin_roots", ()),
+                    memory_backend=create_memory_command_backend(self._workspace),
+                    include_project_memory=False,
+                )
+            return command_context
+
+        parsed = bundle.commands.lookup(command_prompt)
+        if parsed is None and not message.media:
+            parsed = lookup_skill_slash_command(command_prompt, get_command_context())
         if parsed is not None and not message.media:
             command, args = parsed
             command_name = str(getattr(command, "name", "") or "")
@@ -266,21 +291,7 @@ class OhmoSessionRuntimePool:
                 return
             result = await command.handler(
                 args,
-                CommandContext(
-                    engine=bundle.engine,
-                    hooks_summary=bundle.hook_summary(),
-                    mcp_summary=bundle.mcp_summary(),
-                    plugin_summary=bundle.plugin_summary(),
-                    cwd=bundle.cwd,
-                    tool_registry=bundle.tool_registry,
-                    app_state=bundle.app_state,
-                    session_backend=bundle.session_backend,
-                    session_id=bundle.session_id,
-                    extra_skill_dirs=bundle.extra_skill_dirs,
-                    extra_plugin_roots=bundle.extra_plugin_roots,
-                    memory_backend=create_memory_command_backend(self._workspace),
-                    include_project_memory=False,
-                ),
+                get_command_context(),
             )
             async for update in self._stream_command_result(
                 bundle=bundle,

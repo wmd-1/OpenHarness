@@ -3,19 +3,41 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import yaml
 
 logger = logging.getLogger(__name__)
 
 
-def parse_skill_frontmatter(
+def parse_bool_frontmatter(value: Any, *, default: bool) -> bool:
+    """Parse permissive YAML frontmatter booleans."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def optional_frontmatter_str(value: Any) -> str | None:
+    """Return a stripped string value, or ``None`` when absent/blank."""
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def parse_skill_metadata(
     default_name: str,
     content: str,
     *,
     fallback_template: str = "Skill: {name}",
-) -> tuple[str, str]:
-    """Extract ``name`` and ``description`` from a SKILL.md file.
+) -> dict[str, Any]:
+    """Extract metadata from a SKILL.md file.
 
     Parses YAML frontmatter (``---`` delimited) via ``yaml.safe_load`` so that
     folded block scalars (``>``), literal block scalars (``|``), quoted values,
@@ -25,6 +47,7 @@ def parse_skill_frontmatter(
     """
     name = default_name
     description = ""
+    frontmatter: dict[str, Any] = {}
     lines = content.splitlines()
 
     if content.startswith("---\n"):
@@ -33,6 +56,7 @@ def parse_skill_frontmatter(
             try:
                 metadata = yaml.safe_load(content[4:end_index])
                 if isinstance(metadata, dict):
+                    frontmatter = metadata
                     val = metadata.get("name")
                     if isinstance(val, str) and val.strip():
                         name = val.strip()
@@ -55,4 +79,19 @@ def parse_skill_frontmatter(
 
     if not description:
         description = fallback_template.format(name=name)
-    return name, description
+    return {"name": name, "description": description, "frontmatter": frontmatter}
+
+
+def parse_skill_frontmatter(
+    default_name: str,
+    content: str,
+    *,
+    fallback_template: str = "Skill: {name}",
+) -> tuple[str, str]:
+    """Extract ``name`` and ``description`` from a SKILL.md file."""
+    metadata = parse_skill_metadata(
+        default_name,
+        content,
+        fallback_template=fallback_template,
+    )
+    return str(metadata["name"]), str(metadata["description"])
