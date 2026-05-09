@@ -467,6 +467,37 @@ def _profile_from_flat_settings(settings: "Settings") -> tuple[str, ProviderProf
     return name, profile
 
 
+class ImageGenerationConfig(BaseModel):
+    """Configuration for the image_generation tool."""
+
+    provider: str = "auto"
+    model: str = "gpt-image-2"
+    api_key: str = ""
+    base_url: str = ""
+    codex_model: str = "gpt-5.4"
+    codex_base_url: str = ""
+
+    @classmethod
+    def from_env(cls) -> "ImageGenerationConfig":
+        """Load image generation config from environment variables."""
+        return cls(
+            provider=os.environ.get("OPENHARNESS_IMAGE_GENERATION_PROVIDER", "auto").strip()
+            or "auto",
+            model=os.environ.get("OPENHARNESS_IMAGE_GENERATION_MODEL", "gpt-image-2").strip()
+            or "gpt-image-2",
+            api_key=os.environ.get("OPENHARNESS_IMAGE_GENERATION_API_KEY", "").strip(),
+            base_url=os.environ.get("OPENHARNESS_IMAGE_GENERATION_BASE_URL", "").strip(),
+            codex_model=os.environ.get("OPENHARNESS_IMAGE_GENERATION_CODEX_MODEL", "gpt-5.4").strip()
+            or "gpt-5.4",
+            codex_base_url=os.environ.get("OPENHARNESS_IMAGE_GENERATION_CODEX_BASE_URL", "").strip(),
+        )
+
+    @property
+    def is_configured(self) -> bool:
+        """Return True when either a key provider or Codex provider is selected."""
+        return bool(self.api_key or self.provider in {"auto", "codex"})
+
+
 class VisionModelConfig(BaseModel):
     """Configuration for the vision model used by the image_to_text tool.
 
@@ -536,6 +567,9 @@ class Settings(BaseModel):
 
     # Vision model (image-to-text fallback)
     vision: VisionModelConfig = Field(default_factory=VisionModelConfig)
+
+    # Image generation model
+    image_generation: ImageGenerationConfig = Field(default_factory=ImageGenerationConfig)
 
     def merged_profiles(self) -> dict[str, ProviderProfile]:
         """Return the saved profiles merged over the built-in catalog."""
