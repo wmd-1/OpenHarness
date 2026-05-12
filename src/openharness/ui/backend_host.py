@@ -50,6 +50,7 @@ class BackendHostConfig:
 
     model: str | None = None
     max_turns: int | None = None
+    effort: str | None = None
     base_url: str | None = None
     system_prompt: str | None = None
     api_key: str | None = None
@@ -89,6 +90,7 @@ class ReactBackendHost:
         self._bundle = await build_runtime(
             model=self._config.model,
             max_turns=self._config.max_turns,
+            effort=self._config.effort,
             base_url=self._config.base_url,
             system_prompt=self._config.system_prompt,
             api_key=self._config.api_key,
@@ -549,6 +551,7 @@ class ReactBackendHost:
                 {"value": "low", "label": "Low", "description": "Fastest responses", "active": settings.effort == "low"},
                 {"value": "medium", "label": "Medium", "description": "Balanced reasoning", "active": settings.effort == "medium"},
                 {"value": "high", "label": "High", "description": "Deepest reasoning", "active": settings.effort == "high"},
+                {"value": "xhigh", "label": "XHigh", "description": "Extra high reasoning", "active": settings.effort == "xhigh"},
             ]
             await self._emit(
                 BackendEvent(
@@ -791,6 +794,7 @@ async def run_backend_host(
     *,
     model: str | None = None,
     max_turns: int | None = None,
+    effort: str | None = None,
     base_url: str | None = None,
     system_prompt: str | None = None,
     api_key: str | None = None,
@@ -815,6 +819,7 @@ async def run_backend_host(
         BackendHostConfig(
             model=model,
             max_turns=max_turns,
+            effort=effort,
             base_url=base_url,
             system_prompt=system_prompt,
             api_key=api_key,

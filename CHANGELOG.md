@@ -6,6 +6,10 @@ The format is based on Keep a Changelog, and this project currently tracks chang
 
 ## [Unreleased]
 
+### Fixed
+
+- Codex subscription requests now pass reasoning effort separately, enabling `gpt-5.5` with `xhigh` effort instead of treating `gpt-5.5 xhigh` as an unsupported model name.
+
 ## [0.1.9] - 2026-05-07
 
 ### Added

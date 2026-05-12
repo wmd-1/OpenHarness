@@ -1123,10 +1123,13 @@ def create_default_command_registry(
         value = args.strip() or "show"
         if value == "show":
             return CommandResult(message=f"Reasoning effort: {current}")
-        if value not in {"low", "medium", "high"}:
-            return CommandResult(message="Usage: /effort [show|low|medium|high]")
+        if value == "max":
+            value = "xhigh"
+        if value not in {"low", "medium", "high", "xhigh"}:
+            return CommandResult(message="Usage: /effort [show|low|medium|high|xhigh]")
         settings.effort = value
         save_settings(settings)
+        context.engine.set_effort(value)
         context.engine.set_system_prompt(
             build_runtime_system_prompt(
                 settings,

@@ -248,6 +248,7 @@ async def build_runtime(
     cwd: str | None = None,
     model: str | None = None,
     max_turns: int | None = None,
+    effort: str | None = None,
     base_url: str | None = None,
     system_prompt: str | None = None,
     api_key: str | None = None,
@@ -271,6 +272,7 @@ async def build_runtime(
     settings_overrides: dict[str, Any] = {
         "model": model,
         "max_turns": max_turns,
+        "effort": effort,
         "base_url": base_url,
         "system_prompt": system_prompt,
         "api_key": api_key,

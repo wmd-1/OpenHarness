@@ -924,6 +924,12 @@ async def test_ui_mode_commands_persist_and_update_state(tmp_path: Path, monkeyp
     assert load_settings().effort == "high"
     assert context.app_state.get().effort == "high"
 
+    effort_command, effort_args = registry.lookup("/effort xhigh")
+    effort_result = await effort_command.handler(effort_args, context)
+    assert "xhigh" in effort_result.message
+    assert load_settings().effort == "xhigh"
+    assert context.app_state.get().effort == "xhigh"
+
     passes_command, passes_args = registry.lookup("/passes 3")
     passes_result = await passes_command.handler(passes_args, context)
     assert "3" in passes_result.message
