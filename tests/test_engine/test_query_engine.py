@@ -1198,6 +1198,64 @@ class _BoomTool(BaseTool):
         raise RuntimeError("boom")
 
 
+@pytest.mark.asyncio
+async def test_query_engine_synthesizes_tool_result_when_single_tool_raises(tmp_path: Path):
+    registry = ToolRegistry()
+    registry.register(_BoomTool())
+
+    engine = QueryEngine(
+        api_client=FakeApiClient(
+            [
+                _FakeResponse(
+                    message=ConversationMessage(
+                        role="assistant",
+                        content=[
+                            TextBlock(text="Running one tool."),
+                            ToolUseBlock(id="toolu_boom", name="boom_tool", input={}),
+                        ],
+                    ),
+                    usage=UsageSnapshot(input_tokens=1, output_tokens=1),
+                ),
+                _FakeResponse(
+                    message=ConversationMessage(
+                        role="assistant",
+                        content=[TextBlock(text="Recovered from the failure.")],
+                    ),
+                    usage=UsageSnapshot(input_tokens=1, output_tokens=1),
+                ),
+            ]
+        ),
+        tool_registry=registry,
+        permission_checker=PermissionChecker(PermissionSettings(mode=PermissionMode.FULL_AUTO)),
+        cwd=tmp_path,
+        model="claude-test",
+        system_prompt="system",
+    )
+
+    events = [event async for event in engine.submit_message("run one tool")]
+
+    completed = [event for event in events if isinstance(event, ToolExecutionCompleted)]
+    assert len(completed) == 1
+    assert completed[0].tool_name == "boom_tool"
+    assert completed[0].is_error is True
+    assert "RuntimeError" in completed[0].output
+    assert "boom" in completed[0].output
+
+    user_tool_messages = [
+        msg
+        for msg in engine.messages
+        if msg.role == "user" and any(isinstance(block, ToolResultBlock) for block in msg.content)
+    ]
+    assert len(user_tool_messages) == 1
+    result_blocks = [
+        block for block in user_tool_messages[0].content if isinstance(block, ToolResultBlock)
+    ]
+    assert result_blocks[0].tool_use_id == "toolu_boom"
+
+    assert isinstance(events[-1], AssistantTurnComplete)
+    assert events[-1].message.text == "Recovered from the failure."
+
+
 class _LargeOutputTool(BaseTool):
     name = "mcp__playwright__browser_snapshot"
     description = "Returns a large browser snapshot."

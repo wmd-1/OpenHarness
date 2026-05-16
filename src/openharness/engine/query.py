@@ -820,7 +820,15 @@ async def run_query(
             # Single tool: sequential (stream events immediately)
             tc = tool_calls[0]
             yield ToolExecutionStarted(tool_name=tc.name, tool_input=tc.input), None
-            result = await _execute_tool_call(context, tc.name, tc.id, tc.input)
+            try:
+                result = await _execute_tool_call(context, tc.name, tc.id, tc.input)
+            except Exception as exc:
+                log.exception("tool execution raised: name=%s id=%s", tc.name, tc.id)
+                result = ToolResultBlock(
+                    tool_use_id=tc.id,
+                    content=f"Tool {tc.name} failed: {type(exc).__name__}: {exc}",
+                    is_error=True,
+                )
             yield ToolExecutionCompleted(
                 tool_name=tc.name,
                 output=result.content,
