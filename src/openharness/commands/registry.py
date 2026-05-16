@@ -2343,9 +2343,25 @@ def create_default_command_registry(
     registry.register(SlashCommand("vim", "Show or update Vim mode", _vim_handler))
     registry.register(SlashCommand("voice", "Show or update voice mode", _voice_handler))
     registry.register(SlashCommand("doctor", "Show environment diagnostics", _doctor_handler))
-    registry.register(SlashCommand("diff", "Show git diff output", _diff_handler))
+    registry.register(
+        SlashCommand(
+            "diff",
+            "Show git diff output",
+            _diff_handler,
+            remote_invocable=False,
+            remote_admin_opt_in=True,
+        )
+    )
     registry.register(SlashCommand("branch", "Show git branch information", _branch_handler))
-    registry.register(SlashCommand("commit", "Show status or create a git commit", _commit_handler))
+    registry.register(
+        SlashCommand(
+            "commit",
+            "Show status or create a git commit",
+            _commit_handler,
+            remote_invocable=False,
+            remote_admin_opt_in=True,
+        )
+    )
     registry.register(SlashCommand("issue", "Show or update project issue context", _issue_handler))
     registry.register(SlashCommand("pr_comments", "Show or update project PR comments context", _pr_comments_handler))
     registry.register(SlashCommand("privacy-settings", "Show local privacy and storage settings", _privacy_settings_handler))
@@ -2354,8 +2370,24 @@ def create_default_command_registry(
     registry.register(SlashCommand("upgrade", "Show upgrade instructions", _upgrade_handler))
     registry.register(SlashCommand("agents", "List or inspect agent and teammate tasks", _agents_handler))
     registry.register(SlashCommand("subagents", "Show subagent usage and inspect worker tasks", _agents_handler))
-    registry.register(SlashCommand("tasks", "Manage background tasks", _tasks_handler))
-    registry.register(SlashCommand("autopilot", "Manage repo autopilot intake and context", _autopilot_handler))
+    registry.register(
+        SlashCommand(
+            "tasks",
+            "Manage background tasks",
+            _tasks_handler,
+            remote_invocable=False,
+            remote_admin_opt_in=True,
+        )
+    )
+    registry.register(
+        SlashCommand(
+            "autopilot",
+            "Manage repo autopilot intake and context",
+            _autopilot_handler,
+            remote_invocable=False,
+            remote_admin_opt_in=True,
+        )
+    )
     registry.register(
         SlashCommand(
             "ship",
