@@ -45,6 +45,7 @@ from openharness.keybindings import load_keybindings
 
 PermissionPrompt = Callable[[str, str], Awaitable[bool]]
 AskUserPrompt = Callable[[str], Awaitable[str]]
+EditApprovalPrompt = Callable[[str, str, int, int], Awaitable[str]]
 SystemPrinter = Callable[[str], Awaitable[None]]
 StreamRenderer = Callable[[StreamEvent], Awaitable[None]]
 ClearHandler = Callable[[], Awaitable[None]]
@@ -257,6 +258,7 @@ async def build_runtime(
     api_client: SupportsStreamingMessages | None = None,
     permission_prompt: PermissionPrompt | None = None,
     ask_user_prompt: AskUserPrompt | None = None,
+    edit_approval_prompt: EditApprovalPrompt | None = None,
     restore_messages: list[dict] | None = None,
     restore_tool_metadata: dict[str, object] | None = None,
     enforce_max_turns: bool = True,
@@ -391,6 +393,7 @@ async def build_runtime(
             "extra_skill_dirs": normalized_skill_dirs,
             "extra_plugin_roots": normalized_plugin_roots,
             "session_id": session_id,
+            "edit_approval_prompt": edit_approval_prompt,
             "vision_model_config": _resolve_vision_config(settings),
             "image_generation_config": _resolve_image_generation_config(settings),
             **restored_metadata,

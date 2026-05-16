@@ -78,6 +78,7 @@ class ReactBackendHost:
         self._write_lock = asyncio.Lock()
         self._request_queue: asyncio.Queue[FrontendRequest] = asyncio.Queue()
         self._permission_requests: dict[str, asyncio.Future[bool]] = {}
+        self._edit_approval_requests: dict[str, asyncio.Future[str]] = {}
         self._question_requests: dict[str, asyncio.Future[str]] = {}
         self._permission_lock = asyncio.Lock()
         self._busy = False
@@ -85,6 +86,7 @@ class ReactBackendHost:
         self._active_request_task: asyncio.Task[bool] | None = None
         # Track last tool input per name for rich event emission
         self._last_tool_inputs: dict[str, dict] = {}
+        self._edit_always_approved = False
 
     async def run(self) -> int:
         self._bundle = await build_runtime(
@@ -102,6 +104,7 @@ class ReactBackendHost:
             restore_tool_metadata=self._config.restore_tool_metadata,
             permission_prompt=self._ask_permission,
             ask_user_prompt=self._ask_question,
+            edit_approval_prompt=self._ask_edit_approval,
             enforce_max_turns=self._config.enforce_max_turns,
             permission_mode=self._config.permission_mode,
             session_backend=self._config.session_backend,
@@ -194,6 +197,11 @@ class ReactBackendHost:
                 request = FrontendRequest.model_validate_json(payload)
             except Exception as exc:  # pragma: no cover - defensive protocol handling
                 await self._emit(BackendEvent(type="error", message=f"Invalid request: {exc}"))
+                continue
+            if request.type == "permission_response" and request.request_id in self._edit_approval_requests:
+                future = self._edit_approval_requests[request.request_id]
+                if not future.done():
+                    future.set_result(_edit_approval_reply_from_request(request))
                 continue
             if request.type == "permission_response" and request.request_id in self._permission_requests:
                 future = self._permission_requests[request.request_id]
@@ -758,6 +766,45 @@ class ReactBackendHost:
             finally:
                 self._permission_requests.pop(request_id, None)
 
+    def _current_permission_mode(self) -> str:
+        if self._bundle is None:
+            return str(self._config.permission_mode or "")
+        return str(self._bundle.app_state.get().permission_mode or "")
+
+    async def _ask_edit_approval(self, path: str, diff: str, added: int, removed: int) -> str:
+        if self._edit_always_approved or self._current_permission_mode() == "full_auto":
+            return "always"
+
+        async with self._permission_lock:
+            request_id = uuid4().hex
+            future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+            self._edit_approval_requests[request_id] = future
+            await self._emit(
+                BackendEvent(
+                    type="modal_request",
+                    modal={
+                        "kind": "edit_diff",
+                        "request_id": request_id,
+                        "path": path,
+                        "diff": diff,
+                        "added": added,
+                        "removed": removed,
+                    },
+                )
+            )
+            try:
+                reply = await asyncio.wait_for(future, timeout=300)
+            except asyncio.TimeoutError:
+                log.warning("Edit approval request %s timed out after 300s, denying", request_id)
+                reply = "reject"
+            finally:
+                self._edit_approval_requests.pop(request_id, None)
+                await self._emit(BackendEvent(type="modal_request", modal=None))
+
+            if reply == "always":
+                self._edit_always_approved = True
+            return reply
+
     async def _ask_question(self, question: str) -> str:
         request_id = uuid4().hex
         future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
@@ -842,3 +889,10 @@ async def run_backend_host(
 
 
 __all__ = ["run_backend_host", "ReactBackendHost", "BackendHostConfig"]
+
+
+def _edit_approval_reply_from_request(request: FrontendRequest) -> str:
+    reply = (request.permission_reply or "").strip().lower()
+    if reply in {"once", "always", "reject"}:
+        return reply
+    return "once" if bool(request.allowed) else "reject"
