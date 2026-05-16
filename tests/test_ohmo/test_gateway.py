@@ -30,6 +30,7 @@ from openharness.engine.stream_events import (
 from openharness.memory import add_memory_entry as add_project_memory_entry
 from openharness.memory import list_memory_files as list_project_memory_files
 from openharness.permissions import PermissionChecker, PermissionMode
+from openharness.tasks.manager import get_task_manager
 from openharness.tools.base import ToolExecutionContext, ToolRegistry
 
 from ohmo.gateway.bridge import OhmoGatewayBridge, _format_gateway_error
@@ -826,6 +827,7 @@ async def test_runtime_pool_blocks_registered_bridge_spawn_without_shelling_out(
 
 
 @pytest.mark.asyncio
+<<<<<<< HEAD
 async def test_runtime_pool_blocks_registered_commit_without_running_git_hooks(tmp_path, monkeypatch):
     workspace = tmp_path / ".ohmo-home"
     initialize_workspace(workspace)
@@ -867,6 +869,19 @@ async def test_runtime_pool_blocks_registered_commit_without_running_git_hooks(t
     command, _ = registry.lookup("/commit remote requested commit")
     assert command is not None
     assert command.name == "commit"
+=======
+async def test_runtime_pool_blocks_registered_tasks_run_without_shelling_out(tmp_path, monkeypatch):
+    workspace = tmp_path / ".ohmo-home"
+    initialize_workspace(workspace)
+    marker = tmp_path / "remote-tasks-marker.txt"
+    payload = f"/tasks run printf REMOTE_TASKS_EXEC > {marker}"
+    registry = create_default_command_registry()
+    command, _ = registry.lookup(payload)
+    existing_tasks = {task.id for task in get_task_manager().list_tasks()}
+
+    assert command is not None
+    assert command.name == "tasks"
+>>>>>>> review/pr-252-merge
     assert command.remote_invocable is False
 
     async def fake_build_runtime(**kwargs):
@@ -879,10 +894,25 @@ async def test_runtime_pool_blocks_registered_commit_without_running_git_hooks(t
 
         return SimpleNamespace(
             engine=FakeEngine(),
+<<<<<<< HEAD
             cwd=str(repo),
             session_id="sess123",
             current_settings=lambda: SimpleNamespace(model="gpt-5.4"),
             commands=registry,
+=======
+            cwd=str(tmp_path),
+            session_id="sess123",
+            current_settings=lambda: SimpleNamespace(model="gpt-5.4"),
+            commands=registry,
+            tool_registry=None,
+            app_state=None,
+            session_backend=None,
+            extra_skill_dirs=(),
+            extra_plugin_roots=(),
+            hook_summary=lambda: "",
+            mcp_summary=lambda: "",
+            plugin_summary=lambda: "",
+>>>>>>> review/pr-252-merge
         )
 
     async def fake_start_runtime(bundle):
@@ -893,6 +923,7 @@ async def test_runtime_pool_blocks_registered_commit_without_running_git_hooks(t
     monkeypatch.setattr("ohmo.gateway.runtime.build_runtime", fake_build_runtime)
     monkeypatch.setattr("ohmo.gateway.runtime.start_runtime", fake_start_runtime)
 
+<<<<<<< HEAD
     pool = OhmoSessionRuntimePool(cwd=repo, workspace=workspace, provider_profile="codex")
     message = InboundMessage(
         channel="slack",
@@ -913,6 +944,16 @@ async def test_runtime_pool_blocks_registered_commit_without_running_git_hooks(t
         text=True,
     ).stdout.strip()
     assert last_commit == "initial"
+=======
+    pool = OhmoSessionRuntimePool(cwd=tmp_path, workspace=workspace, provider_profile="codex")
+    message = InboundMessage(channel="feishu", sender_id="u1", chat_id="c1", content=payload)
+    updates = [u async for u in pool.stream_message(message, "feishu:c1")]
+
+    assert updates[-1].kind == "final"
+    assert updates[-1].text == "/tasks is only available in the local OpenHarness UI."
+    assert {task.id for task in get_task_manager().list_tasks()} == existing_tasks
+    assert marker.exists() is False
+>>>>>>> review/pr-252-merge
 
 
 @pytest.mark.asyncio
