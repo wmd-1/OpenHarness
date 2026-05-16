@@ -2370,28 +2370,24 @@ def create_default_command_registry(
     registry.register(SlashCommand("upgrade", "Show upgrade instructions", _upgrade_handler))
     registry.register(SlashCommand("agents", "List or inspect agent and teammate tasks", _agents_handler))
     registry.register(SlashCommand("subagents", "Show subagent usage and inspect worker tasks", _agents_handler))
-<<<<<<< HEAD
-    registry.register(SlashCommand("tasks", "Manage background tasks", _tasks_handler))
-    registry.register(
-        SlashCommand(
-            "autopilot",
-            "Manage repo autopilot intake and context",
-            _autopilot_handler,
-=======
     registry.register(
         SlashCommand(
             "tasks",
             "Manage background tasks",
             _tasks_handler,
->>>>>>> review/pr-252-merge
             remote_invocable=False,
             remote_admin_opt_in=True,
         )
     )
-<<<<<<< HEAD
-=======
-    registry.register(SlashCommand("autopilot", "Manage repo autopilot intake and context", _autopilot_handler))
->>>>>>> review/pr-252-merge
+    registry.register(
+        SlashCommand(
+            "autopilot",
+            "Manage repo autopilot intake and context",
+            _autopilot_handler,
+            remote_invocable=False,
+            remote_admin_opt_in=True,
+        )
+    )
     registry.register(
         SlashCommand(
             "ship",
