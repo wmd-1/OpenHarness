@@ -47,6 +47,7 @@ class QueryEngine:
         self._model = model
         self._system_prompt = system_prompt
         self._max_tokens = max_tokens
+        self._effort = settings.effort if settings is not None else None
         self._context_window_tokens = context_window_tokens
         self._auto_compact_threshold_tokens = auto_compact_threshold_tokens
         self._max_turns = max_turns
@@ -105,6 +106,10 @@ class QueryEngine:
     def set_model(self, model: str) -> None:
         """Update the active model for future turns."""
         self._model = model
+
+    def set_effort(self, effort: str | None) -> None:
+        """Update the active reasoning effort for future turns."""
+        self._effort = effort
 
     def set_api_client(self, api_client: SupportsStreamingMessages) -> None:
         """Update the active API client for future turns."""
@@ -189,6 +194,7 @@ class QueryEngine:
             model=self._model,
             system_prompt=self._system_prompt,
             max_tokens=self._max_tokens,
+            effort=self._effort,
             context_window_tokens=self._context_window_tokens,
             auto_compact_threshold_tokens=self._auto_compact_threshold_tokens,
             max_turns=self._max_turns,
@@ -213,6 +219,7 @@ class QueryEngine:
 
     async def continue_pending(self, *, max_turns: int | None = None) -> AsyncIterator[StreamEvent]:
         """Continue an interrupted tool loop without appending a new user message."""
+        self._messages = sanitize_conversation_messages(self._messages)
         context = QueryContext(
             api_client=self._api_client,
             tool_registry=self._tool_registry,
@@ -221,6 +228,7 @@ class QueryEngine:
             model=self._model,
             system_prompt=self._system_prompt,
             max_tokens=self._max_tokens,
+            effort=self._effort,
             context_window_tokens=self._context_window_tokens,
             auto_compact_threshold_tokens=self._auto_compact_threshold_tokens,
             max_turns=max_turns if max_turns is not None else self._max_turns,

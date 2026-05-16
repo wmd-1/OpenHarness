@@ -847,6 +847,8 @@ class Settings(BaseModel):
         # Strip ANSI escape sequences from model name if present
         if "model" in updates and isinstance(updates["model"], str):
             updates["model"] = strip_ansi_escape_sequences(updates["model"])
+        if "effort" in updates and isinstance(updates["effort"], str):
+            updates["effort"] = "xhigh" if updates["effort"].strip().lower() == "max" else updates["effort"].strip().lower()
         merged = self.model_copy(update=updates)
         if not updates:
             return merged

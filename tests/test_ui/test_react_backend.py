@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -102,6 +103,38 @@ async def test_read_requests_resolves_permission_response_without_queueing(monke
 
     assert fut.done()
     assert fut.result() is True
+    queued = await host._request_queue.get()
+    assert queued.type == "shutdown"
+    assert host._request_queue.empty()
+
+
+@pytest.mark.asyncio
+async def test_read_requests_resolves_edit_approval_response_without_queueing(monkeypatch):
+    host = ReactBackendHost(BackendHostConfig(api_client=StaticApiClient("unused")))
+    fut = asyncio.get_running_loop().create_future()
+    host._edit_approval_requests["req-1"] = fut
+
+    payload = b'{"type":"permission_response","request_id":"req-1","allowed":true,"permission_reply":"always"}\n'
+
+    class _FakeBuffer:
+        def __init__(self):
+            self._reads = 0
+
+        def readline(self):
+            self._reads += 1
+            if self._reads == 1:
+                return payload
+            return b""
+
+    class _FakeStdin:
+        buffer = _FakeBuffer()
+
+    monkeypatch.setattr("openharness.ui.backend_host.sys.stdin", _FakeStdin())
+
+    await host._read_requests()
+
+    assert fut.done()
+    assert fut.result() == "always"
     queued = await host._request_queue.get()
     assert queued.type == "shutdown"
     assert host._request_queue.empty()
@@ -666,3 +699,56 @@ async def test_concurrent_ask_permission_are_serialised():
     # distinct request IDs must have been emitted.
     assert len(emitted_order) == 2
     assert emitted_order[0] != emitted_order[1]
+
+
+@pytest.mark.asyncio
+async def test_ask_edit_approval_remembers_always_choice():
+    host = ReactBackendHost(BackendHostConfig(api_client=StaticApiClient("unused")))
+    events = []
+
+    async def _emit(event):
+        events.append(event)
+
+    host._emit = _emit  # type: ignore[method-assign]
+
+    async def _resolver():
+        while not host._edit_approval_requests:
+            await asyncio.sleep(0)
+        next(iter(host._edit_approval_requests.values())).set_result("always")
+
+    asyncio.create_task(_resolver())
+    reply = await host._ask_edit_approval("notes.txt", "@@ -1 +1 @@\n-old\n+new", 1, 1)
+
+    assert reply == "always"
+    assert host._edit_always_approved is True
+    assert any(
+        event.type == "modal_request"
+        and event.modal
+        and event.modal.get("kind") == "edit_diff"
+        for event in events
+    )
+
+    events.clear()
+    second_reply = await host._ask_edit_approval("notes.txt", "@@ -1 +1 @@\n-old\n+new", 1, 1)
+
+    assert second_reply == "always"
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_ask_edit_approval_skips_when_session_mode_is_full_auto():
+    host = ReactBackendHost(BackendHostConfig(api_client=StaticApiClient("unused")))
+    events = []
+
+    async def _emit(event):
+        events.append(event)
+
+    host._emit = _emit  # type: ignore[method-assign]
+    host._bundle = SimpleNamespace(
+        app_state=SimpleNamespace(get=lambda: SimpleNamespace(permission_mode="full_auto"))
+    )
+
+    reply = await host._ask_edit_approval("notes.txt", "@@ -1 +1 @@\n-old\n+new", 1, 1)
+
+    assert reply == "always"
+    assert events == []

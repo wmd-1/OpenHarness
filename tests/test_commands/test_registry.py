@@ -161,6 +161,59 @@ async def test_bridge_command_supports_explicit_remote_admin_opt_in(tmp_path: Pa
     assert getattr(command, "remote_admin_opt_in", False) is True
 
 
+@pytest.mark.asyncio
+async def test_autopilot_command_is_marked_local_only(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    registry = create_default_command_registry()
+    command, _ = registry.lookup("/autopilot run-next")
+    assert command is not None
+    assert command.remote_invocable is False
+
+
+@pytest.mark.asyncio
+async def test_autopilot_command_supports_explicit_remote_admin_opt_in(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    registry = create_default_command_registry()
+    command, _ = registry.lookup("/autopilot run-next")
+    assert command is not None
+    assert getattr(command, "remote_admin_opt_in", False) is True
+
+
+@pytest.mark.asyncio
+async def test_diff_command_is_marked_local_only(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    registry = create_default_command_registry()
+    command, _ = registry.lookup("/diff full")
+    assert command is not None
+    assert command.remote_invocable is False
+
+
+@pytest.mark.asyncio
+async def test_diff_command_supports_explicit_remote_admin_opt_in(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    registry = create_default_command_registry()
+    command, _ = registry.lookup("/diff full")
+    assert command is not None
+    assert getattr(command, "remote_admin_opt_in", False) is True
+
+
+@pytest.mark.asyncio
+async def test_tasks_command_is_marked_local_only(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    registry = create_default_command_registry()
+    command, _ = registry.lookup("/tasks run id")
+    assert command is not None
+    assert command.remote_invocable is False
+
+
+@pytest.mark.asyncio
+async def test_tasks_command_supports_explicit_remote_admin_opt_in(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    registry = create_default_command_registry()
+    command, _ = registry.lookup("/tasks run id")
+    assert command is not None
+    assert getattr(command, "remote_admin_opt_in", False) is True
+
 
 @pytest.mark.asyncio
 async def test_sensitive_control_plane_commands_are_local_only(tmp_path: Path, monkeypatch):
@@ -174,6 +227,7 @@ async def test_sensitive_control_plane_commands_are_local_only(tmp_path: Path, m
         "/mcp",
         "/provider",
         "/model show",
+        "/commit remote requested commit",
         "/ship",
     ):
         command, _ = registry.lookup(payload)
@@ -923,6 +977,12 @@ async def test_ui_mode_commands_persist_and_update_state(tmp_path: Path, monkeyp
     assert "high" in effort_result.message
     assert load_settings().effort == "high"
     assert context.app_state.get().effort == "high"
+
+    effort_command, effort_args = registry.lookup("/effort xhigh")
+    effort_result = await effort_command.handler(effort_args, context)
+    assert "xhigh" in effort_result.message
+    assert load_settings().effort == "xhigh"
+    assert context.app_state.get().effort == "xhigh"
 
     passes_command, passes_args = registry.lookup("/passes 3")
     passes_result = await passes_command.handler(passes_args, context)

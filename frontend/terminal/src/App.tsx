@@ -270,6 +270,41 @@ function AppInner({config}: {config: FrontendConfig}): React.JSX.Element {
 			return;
 		}
 
+		// --- Edit diff modal (also appears while busy) ---
+		if (session.modal?.kind === 'edit_diff') {
+			if (chunk.toLowerCase() === 'y') {
+				session.sendRequest({
+					type: 'permission_response',
+					request_id: session.modal.request_id,
+					allowed: true,
+					permission_reply: 'once',
+				});
+				session.setModal(null);
+				return;
+			}
+			if (chunk.toLowerCase() === 'a') {
+				session.sendRequest({
+					type: 'permission_response',
+					request_id: session.modal.request_id,
+					allowed: true,
+					permission_reply: 'always',
+				});
+				session.setModal(null);
+				return;
+			}
+			if (chunk.toLowerCase() === 'n' || isEscape) {
+				session.sendRequest({
+					type: 'permission_response',
+					request_id: session.modal.request_id,
+					allowed: false,
+					permission_reply: 'reject',
+				});
+				session.setModal(null);
+				return;
+			}
+			return;
+		}
+
 		// --- Question modal (also appears while busy) ---
 		if (session.modal?.kind === 'question') {
 			return; // Let TextInput in ModalHost handle input
