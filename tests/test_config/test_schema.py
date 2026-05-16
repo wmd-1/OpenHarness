@@ -35,3 +35,8 @@ class TestTelegramConfig:
         )
 
         assert config.reply_to_message is False
+
+    def test_bot_name_defaults_to_ohmo(self):
+        config = TelegramConfig()
+
+        assert config.bot_name == "ohmo"
