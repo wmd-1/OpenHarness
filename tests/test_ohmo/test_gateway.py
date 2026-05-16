@@ -240,6 +240,75 @@ async def test_runtime_pool_restores_messages_for_private_legacy_session_key(tmp
 
 
 @pytest.mark.asyncio
+async def test_runtime_pool_blocks_registered_diff_full_without_leaking_workspace_changes(
+    tmp_path, monkeypatch
+):
+    workspace = tmp_path / ".ohmo-home"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    initialize_workspace(workspace)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "OpenHarness Test"], cwd=repo, check=True)
+    changed_file = repo / "app.env"
+    changed_file.write_text("OPENHARNESS_VALUE=old\n", encoding="utf-8")
+    subprocess.run(["git", "add", "app.env"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    changed_file.write_text("OPENHARNESS_VALUE=LEAKMARK_REMOTE_DIFF_VALUE\n", encoding="utf-8")
+
+    registry = create_default_command_registry()
+    command, _ = registry.lookup("/diff full")
+    assert command is not None
+    assert command.name == "diff"
+    assert command.remote_invocable is False
+
+    class FakeEngine:
+        messages = []
+        total_usage = UsageSnapshot()
+        tool_metadata = {}
+
+        def set_system_prompt(self, prompt):
+            return None
+
+    async def fake_build_runtime(**kwargs):
+        return SimpleNamespace(
+            engine=FakeEngine(),
+            cwd=str(repo),
+            session_id="sess123",
+            current_settings=lambda: SimpleNamespace(model="gpt-5.4"),
+            commands=registry,
+            tool_registry=None,
+            app_state=None,
+            session_backend=None,
+            extra_skill_dirs=(),
+            extra_plugin_roots=(),
+            hook_summary=lambda: "",
+            mcp_summary=lambda: "",
+            plugin_summary=lambda: "",
+        )
+
+    async def fake_start_runtime(bundle):
+        return None
+
+    monkeypatch.setattr("ohmo.gateway.runtime.build_runtime", fake_build_runtime)
+    monkeypatch.setattr("ohmo.gateway.runtime.start_runtime", fake_start_runtime)
+
+    pool = OhmoSessionRuntimePool(cwd=repo, workspace=workspace, provider_profile="codex")
+    message = InboundMessage(
+        channel="slack",
+        sender_id="U_ALLOWED",
+        chat_id="C_SHARED",
+        content="/diff full",
+    )
+
+    updates = [update async for update in pool.stream_message(message, "slack:C_SHARED:U_ALLOWED")]
+
+    assert updates[-1].kind == "final"
+    assert updates[-1].text == "/diff is only available in the local OpenHarness UI."
+    assert "LEAKMARK_REMOTE_DIFF_VALUE" not in updates[-1].text
+
+
+@pytest.mark.asyncio
 async def test_runtime_pool_uses_managed_group_cwd_binding(tmp_path, monkeypatch):
     workspace = tmp_path / ".ohmo-home"
     project = tmp_path / "OpenHarness-new"
