@@ -36,8 +36,10 @@ from openharness.memory import (
     get_memory_entrypoint,
     get_project_memory_dir,
     list_memory_files,
+    migrate_memory,
     remove_memory_entry,
 )
+from openharness.memory.schema import is_disabled_metadata, is_memory_expired, split_memory_file
 from openharness.output_styles import load_output_styles
 from openharness.permissions import PermissionChecker, PermissionMode
 from openharness.plugins import load_plugins
@@ -90,6 +92,8 @@ class MemoryCommandBackend:
     """Storage backend used by the generic ``/memory`` slash command."""
 
     label: str
+    default_type: str
+    default_category: str
     get_memory_dir: Callable[[], Path]
     get_entrypoint: Callable[[], Path]
     list_files: Callable[[], list[Path]]
@@ -660,6 +664,37 @@ def create_default_command_registry(
             if not memory_files:
                 return CommandResult(message="No memory files.")
             return CommandResult(message="\n".join(path.name for path in memory_files))
+        if action == "migrate":
+            if rest not in {"--dry-run", "--apply"}:
+                return CommandResult(
+                    message=(
+                        "Usage: /memory "
+                        "[list|show NAME|add TITLE :: CONTENT|remove NAME|"
+                        "migrate --dry-run|migrate --apply]"
+                    )
+                )
+            summary = migrate_memory(
+                context.cwd,
+                memory_dir=backend.get_memory_dir(),
+                default_type=backend.default_type,
+                default_category=backend.default_category,
+                apply=rest == "--apply",
+            )
+            mode = "dry run" if summary.dry_run else "applied"
+            lines = [
+                f"Memory migration {mode}.",
+                f"Scanned: {summary.scanned}",
+                f"Changed: {summary.changed}",
+                f"Unchanged: {summary.unchanged}",
+                f"Failed: {summary.failed}",
+            ]
+            if summary.backup_dir:
+                lines.append(f"Backup: {summary.backup_dir}")
+            if summary.changed_files:
+                lines.append("Changed files: " + ", ".join(summary.changed_files))
+            if summary.failed_files:
+                lines.append("Failed files: " + ", ".join(summary.failed_files))
+            return CommandResult(message="\n".join(lines))
         if action == "show" and rest:
             memory_dir = backend.get_memory_dir()
             path, invalid = _resolve_memory_entry_path(memory_dir, rest)
@@ -669,7 +704,11 @@ def create_default_command_registry(
                 return CommandResult(message=f"Memory entry not found: {rest}")
             if not path.exists():
                 return CommandResult(message=f"Memory entry not found: {rest}")
-            return CommandResult(message=path.read_text(encoding="utf-8"))
+            content = path.read_text(encoding="utf-8")
+            metadata, _, _, _ = split_memory_file(content)
+            if is_disabled_metadata(metadata) or is_memory_expired(metadata):
+                return CommandResult(message=f"Memory entry not found: {rest}")
+            return CommandResult(message=content)
         if action == "add" and rest:
             title, separator, content = rest.partition("::")
             if not separator or not title.strip() or not content.strip():
@@ -680,7 +719,13 @@ def create_default_command_registry(
             if backend.remove_entry(rest.strip()):
                 return CommandResult(message=f"Removed memory entry {rest.strip()}")
             return CommandResult(message=f"Memory entry not found: {rest.strip()}")
-        return CommandResult(message="Usage: /memory [list|show NAME|add TITLE :: CONTENT|remove NAME]")
+        return CommandResult(
+            message=(
+                "Usage: /memory "
+                "[list|show NAME|add TITLE :: CONTENT|remove NAME|"
+                "migrate --dry-run|migrate --apply]"
+            )
+        )
 
     async def _hooks_handler(_: str, context: CommandContext) -> CommandResult:
         return CommandResult(message=context.hooks_summary or "No hooks configured.")
@@ -2465,6 +2510,8 @@ def _memory_backend_for_context(context: CommandContext) -> MemoryCommandBackend
     cwd = context.cwd
     return MemoryCommandBackend(
         label="OpenHarness project memory",
+        default_type="project",
+        default_category="knowledge",
         get_memory_dir=lambda: get_project_memory_dir(cwd),
         get_entrypoint=lambda: get_memory_entrypoint(cwd),
         list_files=lambda: list_memory_files(cwd),
