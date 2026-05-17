@@ -19,6 +19,7 @@ from openharness.commands import MemoryCommandBackend
 from openharness.config.settings import CLAUDE_MODEL_ALIAS_OPTIONS, resolve_model_setting
 from openharness.bridge import get_bridge_manager
 from openharness.coordinator.coordinator_mode import is_coordinator_mode
+from openharness.engine.messages import ConversationMessage, ImageBlock, TextBlock
 from openharness.themes import list_themes
 from openharness.engine.stream_events import (
     AssistantTextDelta,
@@ -33,7 +34,7 @@ from openharness.engine.stream_events import (
 from openharness.output_styles import load_output_styles
 from openharness.tasks import get_task_manager
 from openharness.ui.coordinator_drain import drain_coordinator_async_agents
-from openharness.ui.protocol import BackendEvent, FrontendRequest, TranscriptItem
+from openharness.ui.protocol import BackendEvent, FrontendImageAttachment, FrontendRequest, TranscriptItem
 from openharness.ui.runtime import build_runtime, close_runtime, handle_line, start_runtime
 from openharness.services.session_backend import SessionBackend
 
@@ -166,11 +167,13 @@ class ReactBackendHost:
                     await self._emit(BackendEvent(type="error", message="Session is busy"))
                     continue
                 line = (request.line or "").strip()
-                if not line:
+                if not line and not request.images:
                     continue
                 self._busy = True
                 try:
-                    should_continue = await self._run_active_request(self._process_line(line))
+                    should_continue = await self._run_active_request(
+                        self._process_line(line, images=request.images)
+                    )
                 finally:
                     self._busy = False
                 if not should_continue:
@@ -244,10 +247,23 @@ class ReactBackendHost:
             return
         task.cancel()
 
-    async def _process_line(self, line: str, *, transcript_line: str | None = None) -> bool:
+    async def _process_line(
+        self,
+        line: str,
+        *,
+        transcript_line: str | None = None,
+        images: list[FrontendImageAttachment] | None = None,
+    ) -> bool:
         assert self._bundle is not None
+        user_message = _build_user_message_with_images(line, images or [])
         await self._emit(
-            BackendEvent(type="transcript_item", item=TranscriptItem(role="user", text=transcript_line or line))
+            BackendEvent(
+                type="transcript_item",
+                item=TranscriptItem(
+                    role="user",
+                    text=transcript_line or _format_transcript_line(line, images or []),
+                ),
+            )
         )
 
         async def _print_system(message: str) -> None:
@@ -358,6 +374,7 @@ class ReactBackendHost:
             print_system=_print_system,
             render_event=_render_event,
             clear_output=_clear_output,
+            user_message=user_message,
         )
         if is_coordinator_mode():
             await drain_coordinator_async_agents(
@@ -835,6 +852,32 @@ class ReactBackendHost:
                 return
             sys.stdout.write(payload)
             sys.stdout.flush()
+
+
+def _build_user_message_with_images(
+    line: str,
+    images: list[FrontendImageAttachment],
+) -> ConversationMessage | None:
+    if not images:
+        return None
+    content = [TextBlock(text=line or "Please analyze the attached image.")]
+    content.extend(
+        ImageBlock(
+            media_type=image.media_type,
+            data=image.data,
+            source_path=image.source_path or "",
+        )
+        for image in images
+    )
+    return ConversationMessage.from_user_content(content)
+
+
+def _format_transcript_line(line: str, images: list[FrontendImageAttachment]) -> str:
+    if not images:
+        return line
+    noun = "image" if len(images) == 1 else "images"
+    attachment_line = f"[{len(images)} {noun} attached]"
+    return f"{line}\n{attachment_line}" if line else attachment_line
 
 
 async def run_backend_host(

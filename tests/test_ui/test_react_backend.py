@@ -12,10 +12,16 @@ import pytest
 from openharness.api.client import ApiMessageCompleteEvent
 from openharness.api.usage import UsageSnapshot
 from openharness.engine.stream_events import CompactProgressEvent
-from openharness.engine.messages import ConversationMessage, TextBlock
+from openharness.engine.messages import ConversationMessage, ImageBlock, TextBlock
 from openharness.config.settings import Settings, save_settings
-from openharness.ui.backend_host import BackendHostConfig, ReactBackendHost, run_backend_host
-from openharness.ui.protocol import BackendEvent
+from openharness.ui.backend_host import (
+    BackendHostConfig,
+    ReactBackendHost,
+    _build_user_message_with_images,
+    _format_transcript_line,
+    run_backend_host,
+)
+from openharness.ui.protocol import BackendEvent, FrontendImageAttachment, FrontendRequest
 from openharness.ui.runtime import build_runtime, close_runtime, start_runtime
 
 
@@ -32,6 +38,19 @@ class StaticApiClient:
             usage=UsageSnapshot(input_tokens=2, output_tokens=3),
             stop_reason=None,
         )
+
+
+class CapturingApiClient(StaticApiClient):
+    """Fake streaming client that records model requests."""
+
+    def __init__(self, text: str) -> None:
+        super().__init__(text)
+        self.requests = []
+
+    async def stream_message(self, request):
+        self.requests.append(request)
+        async for event in super().stream_message(request):
+            yield event
 
 
 class FailingApiClient:
@@ -55,6 +74,71 @@ class FakeBinaryStdout:
 
     def flush(self) -> None:
         return None
+
+
+def test_frontend_request_accepts_image_attachments():
+    request = FrontendRequest.model_validate(
+        {
+            "type": "submit_line",
+            "line": "describe this",
+            "images": [
+                {
+                    "media_type": "image/png",
+                    "data": "aGVsbG8=",
+                    "source_path": "clipboard:clipboard.png",
+                }
+            ],
+        }
+    )
+
+    assert request.images[0].media_type == "image/png"
+    assert request.images[0].data == "aGVsbG8="
+
+
+def test_frontend_request_rejects_non_image_attachments():
+    with pytest.raises(ValueError):
+        FrontendRequest.model_validate(
+            {
+                "type": "submit_line",
+                "images": [
+                    {
+                        "media_type": "text/plain",
+                        "data": "aGVsbG8=",
+                    }
+                ],
+            }
+        )
+
+
+def test_build_user_message_with_images():
+    message = _build_user_message_with_images(
+        "What is in this screenshot?",
+        [
+            FrontendImageAttachment(
+                media_type="image/png",
+                data="aGVsbG8=",
+                source_path="clipboard:clipboard.png",
+            )
+        ],
+    )
+
+    assert message is not None
+    assert message.text == "What is in this screenshot?"
+    assert isinstance(message.content[1], ImageBlock)
+    assert message.content[1].media_type == "image/png"
+    assert message.content[1].source_path == "clipboard:clipboard.png"
+
+
+def test_format_transcript_line_mentions_attached_images():
+    assert _format_transcript_line("inspect", []) == "inspect"
+    assert _format_transcript_line("", [FrontendImageAttachment(media_type="image/png", data="x")]) == "[1 image attached]"
+    assert _format_transcript_line(
+        "inspect",
+        [
+            FrontendImageAttachment(media_type="image/png", data="x"),
+            FrontendImageAttachment(media_type="image/jpeg", data="y"),
+        ],
+    ) == "inspect\n[2 images attached]"
 
 
 @pytest.mark.asyncio
@@ -279,6 +363,51 @@ async def test_backend_host_processes_model_turn(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_backend_host_processes_image_turn(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("OPENHARNESS_DATA_DIR", str(tmp_path / "data"))
+
+    client = CapturingApiClient("image received")
+    host = ReactBackendHost(BackendHostConfig(api_client=client))
+    host._bundle = await build_runtime(api_client=client)
+    events = []
+
+    async def _emit(event):
+        events.append(event)
+
+    host._emit = _emit  # type: ignore[method-assign]
+    await start_runtime(host._bundle)
+    try:
+        should_continue = await host._process_line(
+            "",
+            images=[
+                FrontendImageAttachment(
+                    media_type="image/png",
+                    data="aGVsbG8=",
+                    source_path="clipboard:clipboard.png",
+                )
+            ],
+        )
+    finally:
+        await close_runtime(host._bundle)
+
+    assert should_continue is True
+    assert len(client.requests) == 1
+    message = client.requests[0].messages[-2]
+    assert message.text == "Please analyze the attached image."
+    assert isinstance(message.content[1], ImageBlock)
+    assert message.content[1].data == "aGVsbG8="
+    assert any(
+        event.type == "transcript_item"
+        and event.item
+        and event.item.role == "user"
+        and event.item.text == "[1 image attached]"
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
 async def test_backend_host_emits_compact_progress_event(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
@@ -291,8 +420,10 @@ async def test_backend_host_emits_compact_progress_event(tmp_path, monkeypatch):
     async def _emit(event):
         events.append(event)
 
-    async def _fake_handle_line(bundle, line, print_system, render_event, clear_output):
-        del bundle, line, print_system, clear_output
+    async def _fake_handle_line(
+        bundle, line, print_system, render_event, clear_output, user_message=None
+    ):
+        del bundle, line, print_system, clear_output, user_message
         await render_event(
             CompactProgressEvent(
                 phase="compact_start",
