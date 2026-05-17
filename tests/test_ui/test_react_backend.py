@@ -394,10 +394,16 @@ async def test_backend_host_processes_image_turn(tmp_path, monkeypatch):
 
     assert should_continue is True
     assert len(client.requests) == 1
-    message = client.requests[0].messages[-2]
+    image_messages = [
+        message
+        for message in client.requests[0].messages
+        if message.role == "user" and any(isinstance(block, ImageBlock) for block in message.content)
+    ]
+    assert len(image_messages) == 1
+    message = image_messages[0]
     assert message.text == "Please analyze the attached image."
-    assert isinstance(message.content[1], ImageBlock)
-    assert message.content[1].data == "aGVsbG8="
+    image = next(block for block in message.content if isinstance(block, ImageBlock))
+    assert image.data == "aGVsbG8="
     assert any(
         event.type == "transcript_item"
         and event.item

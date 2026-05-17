@@ -368,14 +368,14 @@ class ReactBackendHost:
         async def _clear_output() -> None:
             await self._emit(BackendEvent(type="clear_transcript"))
 
-        should_continue = await handle_line(
-            self._bundle,
-            line,
-            print_system=_print_system,
-            render_event=_render_event,
-            clear_output=_clear_output,
-            user_message=user_message,
-        )
+        handle_line_kwargs: dict[str, Any] = {
+            "print_system": _print_system,
+            "render_event": _render_event,
+            "clear_output": _clear_output,
+        }
+        if user_message is not None:
+            handle_line_kwargs["user_message"] = user_message
+        should_continue = await handle_line(self._bundle, line, **handle_line_kwargs)
         if is_coordinator_mode():
             await drain_coordinator_async_agents(
                 self._bundle,
