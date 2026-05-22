@@ -2325,7 +2325,15 @@ def create_default_command_registry(
     registry.register(SlashCommand("version", "Show the installed OpenHarness version", _version_handler))
     registry.register(SlashCommand("status", "Show session status", _status_handler))
     registry.register(SlashCommand("context", "Show the active runtime system prompt", _context_handler))
-    registry.register(SlashCommand("summary", "Summarize conversation history", _summary_handler))
+    registry.register(
+        SlashCommand(
+            "summary",
+            "Summarize conversation history",
+            _summary_handler,
+            remote_invocable=False,
+            remote_admin_opt_in=True,
+        )
+    )
     registry.register(SlashCommand("compact", "Compact older conversation history", _compact_handler))
     registry.register(SlashCommand("cost", "Show token usage and estimated cost", _cost_handler))
     registry.register(SlashCommand("usage", "Show usage and token estimates", _usage_handler))
@@ -2333,7 +2341,15 @@ def create_default_command_registry(
     registry.register(SlashCommand("dream", "Consolidate memory", _dream_handler))
     registry.register(SlashCommand("memory", "Inspect and manage project memory", _memory_handler))
     registry.register(SlashCommand("hooks", "Show configured hooks", _hooks_handler))
-    registry.register(SlashCommand("resume", "Restore the latest saved session", _resume_handler))
+    registry.register(
+        SlashCommand(
+            "resume",
+            "Restore the latest saved session",
+            _resume_handler,
+            remote_invocable=False,
+            remote_admin_opt_in=True,
+        )
+    )
     registry.register(SlashCommand("session", "Inspect the current session storage", _session_handler))
     registry.register(SlashCommand("export", "Export the current transcript", _export_handler))
     registry.register(SlashCommand("share", "Create a shareable transcript snapshot", _share_handler))
