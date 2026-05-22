@@ -17,6 +17,7 @@ from openharness.channels.bus.events import InboundMessage
 from openharness.channels.bus.queue import MessageBus
 from openharness.commands import CommandResult
 from openharness.commands.registry import SlashCommand, create_default_command_registry
+from openharness.config.paths import get_project_issue_file, get_project_pr_comments_file
 from openharness.config.settings import PermissionSettings, ProviderProfile, Settings
 from openharness.engine.messages import ConversationMessage, ImageBlock, TextBlock, ToolUseBlock
 from openharness.engine.query_engine import QueryEngine
@@ -1136,6 +1137,70 @@ async def test_runtime_pool_blocks_registered_tasks_run_without_shelling_out(tmp
     assert updates[-1].text == "/tasks is only available in the local OpenHarness UI."
     assert {task.id for task in get_task_manager().list_tasks()} == existing_tasks
     assert marker.exists() is False
+
+
+@pytest.mark.asyncio
+async def test_runtime_pool_blocks_project_context_commands_without_writing_files(tmp_path, monkeypatch):
+    workspace = tmp_path / ".ohmo-home"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    initialize_workspace(workspace)
+    registry = create_default_command_registry()
+
+    for payload, expected_name in (
+        ("/issue set Remote supplied issue :: REMOTE_ISSUE_CONTEXT_POISON", "issue"),
+        ("/pr_comments add src/app.py:1 :: REMOTE_PR_COMMENT_POISON", "pr_comments"),
+    ):
+        command, _ = registry.lookup(payload)
+        assert command is not None
+        assert command.name == expected_name
+        assert command.remote_invocable is False
+
+    async def fake_build_runtime(**kwargs):
+        class FakeEngine:
+            messages = []
+            total_usage = UsageSnapshot()
+
+            def set_system_prompt(self, prompt):
+                return None
+
+        return SimpleNamespace(
+            engine=FakeEngine(),
+            cwd=str(repo),
+            session_id="sess123",
+            current_settings=lambda: SimpleNamespace(model="gpt-5.4"),
+            commands=registry,
+            tool_registry=None,
+            app_state=None,
+            session_backend=None,
+            extra_skill_dirs=(),
+            extra_plugin_roots=(),
+            hook_summary=lambda: "",
+            mcp_summary=lambda: "",
+            plugin_summary=lambda: "",
+        )
+
+    async def fake_start_runtime(bundle):
+        return None
+
+    monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("OPENHARNESS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr("ohmo.gateway.runtime.build_runtime", fake_build_runtime)
+    monkeypatch.setattr("ohmo.gateway.runtime.start_runtime", fake_start_runtime)
+
+    pool = OhmoSessionRuntimePool(cwd=repo, workspace=workspace, provider_profile="codex")
+
+    for payload, expected_denial in (
+        ("/issue set Remote supplied issue :: REMOTE_ISSUE_CONTEXT_POISON", "/issue is only available in the local OpenHarness UI."),
+        ("/pr_comments add src/app.py:1 :: REMOTE_PR_COMMENT_POISON", "/pr_comments is only available in the local OpenHarness UI."),
+    ):
+        message = InboundMessage(channel="slack", sender_id="U_ATTACKER", chat_id="C_SHARED", content=payload)
+        updates = [u async for u in pool.stream_message(message, "slack:C_SHARED:U_ATTACKER")]
+        assert updates[-1].kind == "final"
+        assert updates[-1].text == expected_denial
+
+    assert get_project_issue_file(repo).exists() is False
+    assert get_project_pr_comments_file(repo).exists() is False
 
 
 @pytest.mark.asyncio
