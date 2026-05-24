@@ -263,6 +263,9 @@ async def test_sensitive_control_plane_commands_are_local_only(tmp_path: Path, m
         "/model show",
         "/commit remote requested commit",
         "/ship",
+        "/resume",
+        "/resume session-from-another-sender",
+        "/summary 10",
     ):
         command, _ = registry.lookup(payload)
         assert command is not None

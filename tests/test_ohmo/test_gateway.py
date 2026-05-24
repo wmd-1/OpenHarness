@@ -294,8 +294,86 @@ async def test_runtime_pool_summary_does_not_restore_other_slack_thread_sender(t
     updates = [u async for u in pool.stream_message(bob_message, bob_key)]
 
     assert updates[-1].kind == "final"
-    assert updates[-1].text == "No conversation content to summarize."
+    assert updates[-1].text == "/summary is only available in the local OpenHarness UI."
     assert "ALICE_PRIVATE_SUMMARY_SECRET" not in updates[-1].text
+
+
+@pytest.mark.asyncio
+async def test_runtime_pool_blocks_registered_resume_without_listing_or_loading_other_sessions(
+    tmp_path, monkeypatch
+):
+    workspace = tmp_path / ".ohmo-home"
+    initialize_workspace(workspace)
+    registry = create_default_command_registry()
+    command, _ = registry.lookup("/resume alice-session")
+
+    assert command is not None
+    assert command.name == "resume"
+    assert command.remote_invocable is False
+
+    alice_secret = "ALICE_PRIVATE_RESUME_SECRET"
+    alice_key = "slack:C_SHARED:thread1:U_ALICE"
+    bob_key = "slack:C_SHARED:thread1:U_BOB"
+    save_session_snapshot(
+        cwd=tmp_path,
+        workspace=workspace,
+        model="gpt-5.4",
+        system_prompt="test",
+        session_id="alice-session",
+        session_key=alice_key,
+        usage=UsageSnapshot(),
+        messages=[ConversationMessage.from_user_text(f"Alice private note: {alice_secret}")],
+    )
+
+    async def fake_build_runtime(**kwargs):
+        class FakeEngine:
+            messages = []
+            total_usage = UsageSnapshot()
+
+            def set_system_prompt(self, prompt):
+                return None
+
+            def load_messages(self, messages):
+                raise AssertionError("remote /resume must not load saved messages")
+
+        return SimpleNamespace(
+            engine=FakeEngine(),
+            cwd=str(tmp_path),
+            session_id="bob-session",
+            current_settings=lambda: SimpleNamespace(model="gpt-5.4"),
+            commands=registry,
+            tool_registry=None,
+            app_state=None,
+            session_backend=None,
+            extra_skill_dirs=(),
+            extra_plugin_roots=(),
+            hook_summary=lambda: "",
+            mcp_summary=lambda: "",
+            plugin_summary=lambda: "",
+        )
+
+    async def fake_start_runtime(bundle):
+        return None
+
+    monkeypatch.setattr("ohmo.gateway.runtime.build_runtime", fake_build_runtime)
+    monkeypatch.setattr("ohmo.gateway.runtime.start_runtime", fake_start_runtime)
+
+    pool = OhmoSessionRuntimePool(cwd=tmp_path, workspace=workspace, provider_profile="codex")
+    for payload in ("/resume", "/resume alice-session"):
+        message = InboundMessage(
+            channel="slack",
+            sender_id="U_BOB",
+            chat_id="C_SHARED",
+            content=payload,
+            timestamp=datetime.utcnow(),
+            metadata={"thread_ts": "thread1", "chat_type": "group"},
+        )
+        updates = [u async for u in pool.stream_message(message, bob_key)]
+
+        assert updates[-1].kind == "final"
+        assert updates[-1].text == "/resume is only available in the local OpenHarness UI."
+        assert "alice-session" not in updates[-1].text
+        assert alice_secret not in updates[-1].text
 
 
 def test_gateway_error_formats_claude_refresh_failure():
