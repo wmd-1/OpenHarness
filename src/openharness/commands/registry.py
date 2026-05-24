@@ -2476,8 +2476,24 @@ def create_default_command_registry(
             remote_admin_opt_in=True,
         )
     )
-    registry.register(SlashCommand("issue", "Show or update project issue context", _issue_handler))
-    registry.register(SlashCommand("pr_comments", "Show or update project PR comments context", _pr_comments_handler))
+    registry.register(
+        SlashCommand(
+            "issue",
+            "Show or update project issue context",
+            _issue_handler,
+            remote_invocable=False,
+            remote_admin_opt_in=True,
+        )
+    )
+    registry.register(
+        SlashCommand(
+            "pr_comments",
+            "Show or update project PR comments context",
+            _pr_comments_handler,
+            remote_invocable=False,
+            remote_admin_opt_in=True,
+        )
+    )
     registry.register(SlashCommand("privacy-settings", "Show local privacy and storage settings", _privacy_settings_handler))
     registry.register(SlashCommand("rate-limit-options", "Show ways to reduce provider rate pressure", _rate_limit_options_handler))
     registry.register(SlashCommand("release-notes", "Show recent OpenHarness release notes", _release_notes_handler))
