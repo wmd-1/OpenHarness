@@ -848,12 +848,21 @@ class Settings(BaseModel):
     def merge_cli_overrides(self, **overrides: Any) -> Settings:
         """Return a new Settings with CLI overrides applied (non-None values only)."""
         updates = {k: v for k, v in overrides.items() if v is not None}
+        permission_mode = updates.pop("permission_mode", None)
         # Strip ANSI escape sequences from model name if present
         if "model" in updates and isinstance(updates["model"], str):
             updates["model"] = strip_ansi_escape_sequences(updates["model"])
         if "effort" in updates and isinstance(updates["effort"], str):
             updates["effort"] = "xhigh" if updates["effort"].strip().lower() == "max" else updates["effort"].strip().lower()
         merged = self.model_copy(update=updates)
+        if permission_mode is not None:
+            merged = merged.model_copy(
+                update={
+                    "permission": merged.permission.model_copy(
+                        update={"mode": PermissionMode(str(permission_mode))}
+                    )
+                }
+            )
         if not updates:
             return merged
         profile_keys = {

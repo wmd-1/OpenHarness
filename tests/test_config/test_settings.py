@@ -62,6 +62,12 @@ class TestSettings:
         # api_key=None should not override the default
         assert updated.api_key == ""
 
+    def test_merge_cli_overrides_applies_permission_mode(self):
+        s = Settings()
+        updated = s.merge_cli_overrides(permission_mode="full_auto")
+        assert updated.permission.mode == "full_auto"
+        assert s.permission.mode == "default"
+
     def test_merge_cli_overrides_returns_new_instance(self):
         s = Settings()
         updated = s.merge_cli_overrides(model="claude-opus-4-20250514")

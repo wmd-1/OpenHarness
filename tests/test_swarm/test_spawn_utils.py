@@ -29,6 +29,14 @@ def test_build_inherited_env_vars_disables_coordinator_mode(monkeypatch):
     assert env["CLAUDE_CODE_COORDINATOR_MODE"] == "0"
 
 
+def test_build_inherited_env_vars_forwards_openharness_config_dir(monkeypatch):
+    monkeypatch.setenv("OPENHARNESS_CONFIG_DIR", "/opt/data/.openharness")
+
+    env = build_inherited_env_vars()
+
+    assert env["OPENHARNESS_CONFIG_DIR"] == "/opt/data/.openharness"
+
+
 # ---------------------------------------------------------------------------
 # build_inherited_cli_flags – model handling
 # ---------------------------------------------------------------------------
