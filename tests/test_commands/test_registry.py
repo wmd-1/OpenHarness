@@ -1155,7 +1155,9 @@ async def test_agents_session_files_and_reload_plugins_commands(tmp_path: Path, 
     (tmp_path / "src" / "app.py").write_text("print('hi')\n", encoding="utf-8")
 
     session_command, session_args = registry.lookup("/session")
+    context.session_id = "session-smoke"
     session_result = await session_command.handler(session_args, context)
+    assert "Session ID: session-smoke" in session_result.message
     assert "Session directory:" in session_result.message
 
     session_path_command, session_path_args = registry.lookup("/session path")
