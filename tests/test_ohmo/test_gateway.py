@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import logging
 import subprocess
+import sys
 from types import SimpleNamespace
 from datetime import datetime
 import json
@@ -46,7 +47,7 @@ from ohmo.gateway.runtime import (
     _sanitize_group_command_metadata,
     _sanitize_group_command_prompts,
 )
-from ohmo.gateway.service import OhmoGatewayService, gateway_status, stop_gateway_process
+from ohmo.gateway.service import OhmoGatewayService, gateway_status, start_gateway_process, stop_gateway_process
 from ohmo.group_registry import load_managed_group_record, save_managed_group_record
 from ohmo.memory import add_memory_entry as add_ohmo_memory_entry
 from ohmo.memory import list_memory_files as list_ohmo_memory_files
@@ -421,6 +422,34 @@ def test_gateway_status_prefers_live_config_over_stale_state(tmp_path):
     assert state.running is False
     assert state.provider_profile == "codex"
     assert state.enabled_channels == ["feishu"]
+
+
+def test_start_gateway_process_uses_child_log_file_handler_without_console_duplication(tmp_path, monkeypatch):
+    workspace = tmp_path / ".ohmo-home"
+    initialize_workspace(workspace)
+    captured: dict[str, object] = {}
+
+    class FakeProcess:
+        pid = 1234
+
+    def fake_popen(args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setattr("ohmo.gateway.service.subprocess.Popen", fake_popen)
+
+    assert start_gateway_process(tmp_path, workspace) == 1234
+
+    args = captured["args"]
+    kwargs = captured["kwargs"]
+    assert isinstance(args, list)
+    assert args[:4] == [sys.executable, "-m", "ohmo", "gateway"]
+    assert "run" in args
+    assert "--no-console-log" in args
+    assert isinstance(kwargs, dict)
+    assert kwargs["stdout"] is kwargs["stderr"]
+    assert getattr(kwargs["stdout"], "name", "").endswith("gateway.log")
 
 
 def test_stop_gateway_process_kills_matching_workspace_processes(tmp_path, monkeypatch):
