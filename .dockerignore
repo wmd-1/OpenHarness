@@ -1,0 +1,69 @@
+# ============================================================================
+# .dockerignore — 排除不需要进入构建上下文的文件
+# 减小构建上下文大小，加速 docker build 的上下文传输阶段
+# ============================================================================
+
+# 版本控制
+.git
+.gitignore
+
+# Python 缓存与虚拟环境
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info
+*.egg
+dist/
+build/
+.eggs/
+
+# 虚拟环境
+.venv/
+.ENV/
+env/
+openharness-venv/
+.openharness-venv/
+
+# IDE 与编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 测试与覆盖率
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Docker 相关（避免递归）
+Dockerfile*
+docker-compose*
+.dockerignore
+# 但保留 Chrome 本地安装包
+!docker/chrome/
+
+# 文档与资产（运行时不需要）
+docs/
+*.md
+!README.md
+assets/
+LICENSE
+
+# 节点相关（Python 项目不需要前端 node_modules）
+node_modules/
+frontend/terminal/node_modules/
+autopilot-dashboard/node_modules/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 本地配置
+.env
+.env.local

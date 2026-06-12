@@ -1,0 +1,1 @@
+在现有 openharness 镜像内嵌入 FastAPI + Celery，通过 PostgreSQL 记录任务状态、Redis 作 broker，调用容器内 oh CLI 触发 hyperframes 渲染，最终以 StreamingResponse 返回生成的 MP4，并预留多实例多并发横向扩展能力。

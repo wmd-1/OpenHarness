@@ -1,0 +1,65 @@
+# ============================================================================
+# OpenHarness Dockerfile — 官方 install.sh 安装
+# ============================================================================
+# 直接运行官方 install.sh 脚本，与 curl | bash 安装方式完全一致
+# 安装脚本会：创建 venv → pip install → 创建命令 symlink → 创建配置目录
+#
+# 构建命令：
+#   docker build -t openharness:latest .
+# ============================================================================
+
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ---- 系统依赖（install.sh 需要的：python3、git、curl）----
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-pip python3-venv \
+        ca-certificates curl git \
+        ripgrep bash \
+        build-essential \
+        openssh-client \
+        vim-tiny htop \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# ---- 创建非 root 用户 ----
+ARG USERNAME=ohuser
+ARG USER_UID=1000
+ARG USER_GID=1000
+
+RUN groupadd --gid ${USER_GID} ${USERNAME} \
+    && useradd --uid ${USER_UID} --gid ${USER_GID} -m -s /bin/bash ${USERNAME}
+
+# ---- 复制官方安装脚本并执行 ----
+# install.sh 会完成以下步骤（与 curl | bash 安装完全一致）：
+#   1. 检测 OS 和 Python 版本
+#   2. 创建虚拟环境 ~/.openharness-venv
+#   3. pip install openharness-ai（或 --from-source 模式 git clone + pip install -e .）
+#   4. 创建 ~/.openharness/ 配置目录
+#   5. 创建 oh/ohmo/openharness 命令 symlink 到 ~/.local/bin
+#   6. 验证安装
+#
+# 关键：必须以 ohuser 身份执行，否则 venv 和配置会装到 /root/ 下
+COPY scripts/install.sh /tmp/install.sh
+RUN chmod +x /tmp/install.sh \
+    && su - ${USERNAME} -c "bash /tmp/install.sh" \
+    && rm /tmp/install.sh
+
+# ---- 环境变量 ----
+# install.sh 创建的 venv 和 symlink 路径加入 PATH
+ENV PATH="/home/${USERNAME}/.local/bin:/home/${USERNAME}/.openharness-venv/bin:${PATH}" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# ---- 源码挂载点 ----
+WORKDIR /app
+
+USER ${USERNAME}
+
+# PYTHONPATH 使挂载的源码优先于 pip 安装的包
+# 容器启动时通过 -v ./src:/app/src 挂载，修改立即生效
+ENV PYTHONPATH=/app/src:${PYTHONPATH}
+
+ENTRYPOINT ["oh"]
+CMD ["--help"]

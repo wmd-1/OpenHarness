@@ -1,0 +1,60 @@
+# ============================================================================
+# OpenHarness Docker Compose — UV + pip install + 源码挂载热重载
+# ============================================================================
+# 使用方法：
+#   docker compose up                          # 启动（显示 oh --help）
+#   docker compose run --rm openharness         # 同上
+#   docker compose run --rm shell              # 进入容器 bash 终端
+#   docker compose run --rm openharness --version  # 运行 oh 子命令
+#
+# API Key 配置：
+#   创建 .env 文件：
+#     ANTHROPIC_API_KEY=sk-ant-xxx
+#     OPENAI_API_KEY=sk-xxx
+# ============================================================================
+
+services:
+  openharness:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        PYTHON_VERSION: "3.11"
+        UV_VERSION: "0.7.3"
+    image: openharness:${OH_VERSION:-v0.1.9}
+    container_name: openharness
+    environment:
+      - PYTHONUNBUFFERED=1
+      - WATCHFILES_FORCE_POLLING=true
+      - PRODUCER_HEADLESS_SHELL_PATH=/opt/chrome-headless-shell-linux64/chrome-headless-shell
+      - CHROME_HEADLESS_BIN=/opt/chrome-headless-shell-linux64/chrome-headless-shell
+      - OPENHARNESS_PERMISSION_MODE=full_auto
+      - HYPERFRAMES_AUTO_UPDATE=false
+      - HYPERFRAMES_NO_AUTO_INSTALL=1
+      - HYPERFRAMES_NO_UPDATE_CHECK=1
+      # API Keys — 通过 .env 文件传入
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+    volumes:
+      # 源码挂载 — 修改宿主机代码，容器内立即生效
+      # PYTHONPATH=/app/src 使 Python 优先从这里导入，覆盖 pip 安装的版本
+      - ./src:/app/src
+      - ./ohmo:/app/ohmo
+      # 前端源码挂载 — React TUI 的 dev 布局查找路径为 /app/frontend/terminal/
+      - ./frontend:/app/frontend
+      # 持久化配置和会话
+      - openharness-config:/root/.openharness
+    stdin_open: true
+    tty: true
+    shm_size: 256g
+
+  # ---- 交互终端 ----
+  # 直接进入 bash 即可，底层 wrapper 脚本已自动注入权限参数
+  shell:
+    extends: openharness
+    container_name: openharness-shell
+    entrypoint: ["bash"]
+
+volumes:
+  openharness-config:
+    name: openharness-config
