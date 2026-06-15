@@ -1,0 +1,44 @@
+"""VideoStorage protocol interface."""
+
+from pathlib import Path
+from typing import BinaryIO, Protocol, runtime_checkable
+
+
+@runtime_checkable
+class VideoStorage(Protocol):
+    """Abstract interface for video file storage backends."""
+
+    def save(self, task_id: str, src: Path) -> str:
+        """Save a video file and return its storage key.
+
+        Args:
+            task_id: Unique task identifier.
+            src: Local path to the source video file.
+
+        Returns:
+            Storage key (e.g., ``<task_id>.mp4`` or an S3 object key).
+        """
+        ...
+
+    def open(self, key: str) -> tuple[BinaryIO, int]:
+        """Open a stored video for reading.
+
+        Args:
+            key: Storage key returned by :meth:`save`.
+
+        Returns:
+            A tuple of ``(file-like object, file_size_in_bytes)``.
+        """
+        ...
+
+    def delete(self, key: str) -> None:
+        """Delete a stored video file.
+
+        Args:
+            key: Storage key returned by :meth:`save`.
+        """
+        ...
+
+    def exists(self, key: str) -> bool:
+        """Check whether a stored video exists."""
+        ...

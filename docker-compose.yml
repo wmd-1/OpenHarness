@@ -21,7 +21,8 @@ services:
       args:
         PYTHON_VERSION: "3.11"
         UV_VERSION: "0.7.3"
-    image: openharness:${OH_VERSION:-v0.1.9}
+    # image: openharness:${OH_VERSION:-v0.1.9}
+    image: openharness_hyperframes:${OH_VERSION_HYPERFRAMES_VERSION:-v0.1.9_v0.6.98}
     container_name: openharness
     environment:
       - PYTHONUNBUFFERED=1
@@ -55,6 +56,78 @@ services:
     container_name: openharness-shell
     entrypoint: ["bash"]
 
+  # ---- PostgreSQL ----
+  postgres:
+    image: postgres:16-alpine
+    container_name: openharness-postgres
+    environment:
+      POSTGRES_USER: oh
+      POSTGRES_PASSWORD: oh
+      POSTGRES_DB: oh
+    volumes:
+      - oh-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U oh"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ---- Redis ----
+  redis:
+    image: redis:7-alpine
+    container_name: openharness-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - oh-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ---- FastAPI 视频服务 ----
+  api:
+    extends: openharness
+    container_name: openharness-api
+    entrypoint: ["oh-serve"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - OH_DB_URL=postgresql+asyncpg://oh:oh@postgres:5432/oh
+      - OH_DB_SYNC_URL=postgresql+psycopg://oh:oh@postgres:5432/oh
+      - OH_BROKER_URL=redis://redis:6379/0
+      - OH_VIDEO_DIR=/var/openharness/videos
+      - OH_WORKSPACE_ROOT=/workspaces
+      - PRODUCER_HEADLESS_SHELL_PATH=/opt/chrome-headless-shell-linux64/chrome-headless-shell
+      - CHROME_HEADLESS_BIN=/opt/chrome-headless-shell-linux64/chrome-headless-shell
+      - OPENHARNESS_PERMISSION_MODE=full_auto
+      - HYPERFRAMES_AUTO_UPDATE=false
+      - HYPERFRAMES_NO_AUTO_INSTALL=1
+      - HYPERFRAMES_NO_UPDATE_CHECK=1
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+    volumes:
+      - ./src:/app/src
+      - ./ohmo:/app/ohmo
+      - ./service:/opt/oh-service
+      - oh-videos:/var/openharness/videos
+      - oh-workspaces:/workspaces
+      - openharness-config:/root/.openharness
+
 volumes:
   openharness-config:
     name: openharness-config
+  oh-pg:
+    name: openharness-pg
+  oh-redis:
+    name: openharness-redis
+  oh-videos:
+    name: openharness-videos
+  oh-workspaces:
+    name: openharness-workspaces

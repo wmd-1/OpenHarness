@@ -55,6 +55,13 @@ docs/
 assets/
 LICENSE
 
+# ---- hyperframes_github_skills：放行技能目录，排除非必要文件 ----
+!hyperframes_github_skills/
+!hyperframes_github_skills/**/assets/
+!hyperframes_github_skills/**/*.md
+hyperframes_github_skills/**/examples/assets/
+hyperframes_github_skills/**/.gitignore
+
 # 节点相关（Python 项目不需要前端 node_modules）
 node_modules/
 frontend/terminal/node_modules/
