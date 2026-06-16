@@ -22,7 +22,7 @@ services:
         PYTHON_VERSION: "3.11"
         UV_VERSION: "0.7.3"
     # image: openharness:${OH_VERSION:-v0.1.9}
-    image: openharness_hyperframes:${OH_VERSION_HYPERFRAMES_VERSION:-v0.1.9_v0.6.98}
+    image: openharness_hyperframes:${OH_VERSION_HYPERFRAMES_VERSION:-v0.1.9_v0.6.102}
     container_name: openharness
     environment:
       - PYTHONUNBUFFERED=1
@@ -53,7 +53,7 @@ services:
   # 直接进入 bash 即可，底层 wrapper 脚本已自动注入权限参数
   shell:
     extends: openharness
-    container_name: openharness-shell
+    container_name: openharness-shell-${OH_VERSION_HYPERFRAMES_VERSION:-v0.1.9_v0.6.102}
     entrypoint: ["bash"]
 
   # ---- PostgreSQL ----

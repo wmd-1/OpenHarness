@@ -1,0 +1,39 @@
+# ============================================================================
+# Dockerfile.fix — 增量构建：仅更新 skills + Hyperframes 版本
+# ============================================================================
+# 基于已构建的主镜像，避免重复下载系统包、Python 包、Node.js 包等基础依赖
+#
+# 使用场景：
+#   1. 修改了 hyperframes_github_skills/ 内容后快速更新镜像
+#   2. 升级 Hyperframes npm 版本（无需重建整个镜像）
+#
+# 构建命令：
+#   # 仅更新 skills（最快，<5s）
+#   docker build -f Dockerfile.fix \
+#     --build-arg BASE_IMAGE=openharness_hyperframes:v0.1.9_v0.6.102 \
+#     -t openharness_hyperframes:v0.1.9_v0.6.102 .
+#
+#   # 同时升级 Hyperframes 版本
+#   docker build -f Dockerfile.fix \
+#     --build-arg BASE_IMAGE=openharness_hyperframes:v0.1.9_v0.6.102 \
+#     --build-arg HYPERFRAMES_VERSION=0.6.103 \
+#     -t openharness_hyperframes:v0.1.9_v0.6.103 .
+# ============================================================================
+
+ARG BASE_IMAGE=openharness_hyperframes:v0.1.9_v0.6.102
+FROM ${BASE_IMAGE}
+
+# ---- 可选：升级 Hyperframes 版本（不传则跳过）----
+ARG HYPERFRAMES_VERSION=""
+RUN if [ -n "${HYPERFRAMES_VERSION}" ]; then \
+        npm install -g "hyperframes@${HYPERFRAMES_VERSION}"; \
+    fi
+
+# ---- 更新镜像内置 skills（覆盖 /opt/oh-skills-builtin/）----
+COPY hyperframes_github_skills/ /opt/oh-skills-builtin/
+
+# ---- 重写 wrapper 脚本（确保含 skills 同步逻辑）----
+RUN printf '#!/bin/bash\ncp -a /opt/oh-skills-builtin/. /root/.openharness/skills/ 2>/dev/null || true\nexec /root/.openharness-venv/bin/oh --permission-mode full_auto "$@"\n' > /root/.local/bin/oh \
+    && printf '#!/bin/bash\ncp -a /opt/oh-skills-builtin/. /root/.openharness/skills/ 2>/dev/null || true\nexec /root/.openharness-venv/bin/ohmo --permission-mode full_auto "$@"\n' > /root/.local/bin/ohmo \
+    && printf '#!/bin/bash\ncp -a /opt/oh-skills-builtin/. /root/.openharness/skills/ 2>/dev/null || true\nexec /root/.openharness-venv/bin/openharness --permission-mode full_auto "$@"\n' > /root/.local/bin/openharness \
+    && chmod +x /root/.local/bin/oh /root/.local/bin/ohmo /root/.local/bin/openharness

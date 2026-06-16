@@ -58,7 +58,7 @@ RUN apt-get update && apt-retry \
 ENV HYPERFRAMES_AUTO_UPDATE=false \
     HYPERFRAMES_NO_AUTO_INSTALL=1 \
     HYPERFRAMES_NO_UPDATE_CHECK=1
-RUN npm install -g hyperframes@0.6.97 \
+RUN npm install -g hyperframes@0.6.102 \
     && npx skills add heygen-com/hyperframes
 # Chrome Headless Shell（从本地 docker/chrome/ 安装）
 # 预先下载：https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json
@@ -93,13 +93,15 @@ WORKDIR /app
 RUN mkdir -p /root/.openharness/skills /root/.openharness/plugins \
     /root/.local/bin /var/openharness/videos /workspaces
 
-# ---- 复制 hyperframes_github_skills 到 skills 目录 ----
-COPY hyperframes_github_skills/ /root/.openharness/skills/
+# ---- 复制 hyperframes_github_skills 到镜像内置路径（不受命名卷遮蔽）----
+# 运行时由 wrapper 脚本同步到 /root/.openharness/skills/（卷挂载点）
+COPY hyperframes_github_skills/ /opt/oh-skills-builtin/
 
-# ---- 命令 Wrapper（强制注入 full_auto 最高权限）+ oh-serve ----
-RUN printf '#!/bin/bash\nexec /root/.openharness-venv/bin/oh --permission-mode full_auto "$@"\n' > /root/.local/bin/oh \
-    && printf '#!/bin/bash\nexec /root/.openharness-venv/bin/ohmo --permission-mode full_auto "$@"\n' > /root/.local/bin/ohmo \
-    && printf '#!/bin/bash\nexec /root/.openharness-venv/bin/openharness --permission-mode full_auto "$@"\n' > /root/.local/bin/openharness \
+# ---- 命令 Wrapper（强制注入 full_auto 最高权限 + skills 同步）+ oh-serve ----
+# 每次启动时 cp -a 将镜像内置 skills 同步到命名卷，确保重建镜像后 skills 自动更新
+RUN printf '#!/bin/bash\ncp -a /opt/oh-skills-builtin/. /root/.openharness/skills/ 2>/dev/null || true\nexec /root/.openharness-venv/bin/oh --permission-mode full_auto "$@"\n' > /root/.local/bin/oh \
+    && printf '#!/bin/bash\ncp -a /opt/oh-skills-builtin/. /root/.openharness/skills/ 2>/dev/null || true\nexec /root/.openharness-venv/bin/ohmo --permission-mode full_auto "$@"\n' > /root/.local/bin/ohmo \
+    && printf '#!/bin/bash\ncp -a /opt/oh-skills-builtin/. /root/.openharness/skills/ 2>/dev/null || true\nexec /root/.openharness-venv/bin/openharness --permission-mode full_auto "$@"\n' > /root/.local/bin/openharness \
     && printf '#!/bin/bash\nexec /usr/bin/supervisord -c /etc/supervisor/conf.d/oh-service.conf\n' > /usr/local/bin/oh-serve \
     && chmod +x /root/.local/bin/oh /root/.local/bin/ohmo /root/.local/bin/openharness /usr/local/bin/oh-serve
 EXPOSE 8000
