@@ -6,9 +6,10 @@
 
 | Order | Provider          | Env trigger                                 | Voice IDs                                   | Word timestamps                           | Audio format         |
 | ----- | ----------------- | ------------------------------------------- | ------------------------------------------- | ----------------------------------------- | -------------------- |
-| 1     | HeyGen (Starfish) | `$HEYGEN_API_KEY` / `~/.heygen/credentials` | UUIDs from `GET /v3/voices?engine=starfish` | **Yes** (`word_timestamps[]` in response) | mp3 → wav via ffmpeg |
-| 2     | ElevenLabs        | `$ELEVENLABS_API_KEY`                       | UUIDs from elevenlabs.io dashboard          | No                                        | mp3 → wav via ffmpeg |
-| 3     | Kokoro-82M        | always (local fallback)                     | `am_michael`, `af_heart`, … (54 voices)     | No                                        | wav direct           |
+| 1     | QwenTTS (local)   | `$QWENTTS_URL` set                          | QwenTTS voice names (e.g. `vivian`)         | No                                        | ffmpeg → wav 44.1k   |
+| 2     | HeyGen (Starfish) | `$HEYGEN_API_KEY` / `~/.heygen/credentials` | UUIDs from `GET /v3/voices?engine=starfish` | **Yes** (`word_timestamps[]` in response) | mp3 → wav via ffmpeg |
+| 3     | ElevenLabs        | `$ELEVENLABS_API_KEY`                       | UUIDs from elevenlabs.io dashboard          | No                                        | mp3 → wav via ffmpeg |
+| 4     | Kokoro-82M        | always (local fallback)                     | `am_michael`, `af_heart`, … (54 voices)     | No                                        | wav direct           |
 
 ```bash
 # Auto-detect (HeyGen if key set, else ElevenLabs, else Kokoro)
@@ -54,10 +55,53 @@ node skills/hyperframes-media/scripts/heygen-tts.mjs --list   # public starfish 
 - **Words:** `--words <path>` writes the flat `[{id,text,start,end}]` shape below, drop-in for the captions pipeline. HeyGen's `<start>`/`<end>` boundary sentinels are filtered out and ids are re-contiguous.
 - **Non-English:** `--lang <code>` (anything but `en`) is sent as the request `language`.
 
+## QwenTTS (local deployment)
+
+When `$QWENTTS_URL` is set (e.g. `http://localhost:8091`), QwenTTS becomes the highest-priority provider. Served via vLLM-Omni with the OpenAI-compatible `/v1/audio/speech` API.
+
+### Model variants
+
+Each task type requires a matching model checkpoint:
+
+| Task Type     | Model                                    | Description                                        |
+| ------------- | ---------------------------------------- | -------------------------------------------------- |
+| `CustomVoice` | `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice`  | Predefined speaker voices + optional style/emotion  |
+| `VoiceDesign` | `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign`  | Generate speech from natural language voice description |
+| `Base`        | `Qwen/Qwen3-TTS-12Hz-1.7B-Base`         | Voice cloning from reference audio + transcript     |
+
+Default: `CustomVoice` (predefined speakers like `vivian`).
+
+### Modes
+
+| Mode      | Env var            | Endpoint                | Response format            |
+| --------- | ------------------ | ----------------------- | -------------------------- |
+| `speech`  | `QWENTTS_MODE=speech` (default) | `/v1/audio/speech`       | Binary WAV stream          |
+| `chat`    | `QWENTTS_MODE=chat`             | `/v1/chat/completions`   | JSON with base64 audio     |
+
+### Environment variables
+
+| Variable              | Required | Default                                    | Description                                     |
+| --------------------- | -------- | ------------------------------------------ | ----------------------------------------------- |
+| `QWENTTS_URL`         | Yes      | —                                          | Service base URL (e.g. `http://localhost:8091`)  |
+| `QWENTTS_MODE`        | No       | `speech`                                   | `speech` (binary stream) or `chat` (base64 JSON)|
+| `QWENTTS_MODEL`       | No       | `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice`    | Model name passed to the API                    |
+| `QWENTTS_VOICE`       | No       | `vivian`                                   | Voice name (speech mode only; list via `/v1/audio/voices`) |
+| `QWENTTS_INSTRUCTIONS`| No       | —                                          | Style/emotion instruction (e.g. `"Speak with great enthusiasm"`, CustomVoice model only) |
+
+### Notes
+
+- All output is normalized to WAV 44.1kHz mono via ffmpeg (QwenTTS may output 24kHz PCM natively).
+- Non-English `--lang` is forwarded as the `language` field in the speech API request.
+- QwenTTS does not return word timestamps — chain `transcribe` after for caption data.
+- Voice names are QwenTTS-specific and not interchangeable with Kokoro/HeyGen/ElevenLabs.
+- When `QWENTTS_URL` is unset, the provider chain falls through to HeyGen → ElevenLabs → Kokoro.
+- The server serves one model variant at a time; switching task types requires a server restart.
+
 ## When to use which provider
 
 | Goal                                                      | Use                                                 |
 | --------------------------------------------------------- | --------------------------------------------------- |
+| Self-hosted / local-first TTS, no cloud dependency         | **QwenTTS** (`$QWENTTS_URL`)                        |
 | Best voice quality + word timestamps in one call          | **HeyGen**                                          |
 | Drop-in cloud TTS, big voice catalog                      | **ElevenLabs**                                      |
 | Offline, no API key, fast iteration                       | **Kokoro**                                          |

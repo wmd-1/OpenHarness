@@ -25,7 +25,7 @@ assets/bgm.wav                          # BGM (optional; may not be written yet 
 
 ```json
 {
-  "tts_provider": "heygen" | "elevenlabs" | "kokoro",
+  "tts_provider": "qwentts" | "heygen" | "elevenlabs" | "kokoro",
   "voice_id": "<provider-specific voice id>",   // actual TTS voice id used (top-level)
   "bgm_provider": "lyria" | "musicgen" | null,
   "bgm_enabled": true | false,

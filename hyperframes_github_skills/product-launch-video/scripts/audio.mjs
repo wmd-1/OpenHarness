@@ -31,7 +31,7 @@
 //     --out ./audio_meta.json \
 //     [--lyria-recipe <SKILL_DIR>/phases/audio/lyria-recipe.py] \
 //     [--voice <id>] [--lang en] \
-//     [--provider heygen|elevenlabs|kokoro] \
+//     [--provider qwentts|heygen|elevenlabs|kokoro] \
 //     [--no-bgm] [--bgm-prompt "<custom prompt>"] \
 //     [--bgm-seed-seconds 28]
 
@@ -241,6 +241,9 @@ const bgmInferenceBlob = (() => {
 //                (cloud REST, returns word timestamps; see synthesizeHeygen / heygenCredential)
 //   elevenlabs ← $ELEVENLABS_API_KEY + `pip install elevenlabs` (inline python)
 //   kokoro     ← always (local, no key; via published `hyperframes tts`)
+function qwenttsAvailable() {
+  return !!process.env.QWENTTS_URL;
+}
 function heygenAvailable() {
   return heygenCredential() !== null;
 }
@@ -258,10 +261,12 @@ function lyriaKey() {
 
 let provider = userProvider;
 if (!provider) {
-  provider = heygenAvailable() ? "heygen" : elevenlabsAvailable() ? "elevenlabs" : "kokoro";
+  provider = qwenttsAvailable() ? "qwentts" : heygenAvailable() ? "heygen" : elevenlabsAvailable() ? "elevenlabs" : "kokoro";
 }
-if (!["heygen", "elevenlabs", "kokoro"].includes(provider))
-  die(`invalid --provider "${provider}" (must be heygen | elevenlabs | kokoro)`);
+if (!["qwentts", "heygen", "elevenlabs", "kokoro"].includes(provider))
+  die(`invalid --provider "${provider}" (must be qwentts | heygen | elevenlabs | kokoro)`);
+if (provider === "qwentts" && !qwenttsAvailable())
+  die("provider=qwentts but $QWENTTS_URL is not set");
 if (provider === "heygen" && !heygenAvailable())
   die(
     "provider=heygen but no HeyGen credentials — set $HEYGEN_API_KEY or run `hyperframes auth login`",
@@ -279,7 +284,9 @@ let voiceId =
         : die(
             "Kokoro non-English path requires explicit --voice (see /hyperframes-media references/tts.md)",
           )
-      : null); // heygen default resolved below — needs a starfish voice_id
+      : provider === "qwentts"
+        ? (process.env.QWENTTS_VOICE || "vivian")
+        : null); // heygen default resolved below — needs a starfish voice_id
 
 // HeyGen's /v3/voices/speech only accepts STARFISH voice_ids; a v2-catalog id
 // (the old hardcoded default 1bd001e7…) is rejected with HTTP 400. With no
@@ -480,12 +487,90 @@ async function synthesizeHeygen(s) {
   }
 }
 
+async function synthesizeQwenTTS(s) {
+  const baseUrl = process.env.QWENTTS_URL.replace(/\/+$/, "");
+  const mode = (process.env.QWENTTS_MODE || "speech").toLowerCase();
+  const wavAbs = join(hyperframesDir, `assets/voice/${s.sceneId}.wav`);
+  const text = readFileSync(scratchPath(`${s.sceneId}.txt`), "utf8");
+  const model = process.env.QWENTTS_MODEL || "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice";
+  const instructions = process.env.QWENTTS_INSTRUCTIONS || undefined;
+  const td = mkdtempSync(join(tmpdir(), `hf-qwentts-${s.sceneId}-`));
+  const tmpRaw = join(td, "raw_audio");
+
+  try {
+    if (mode === "chat") {
+      // Qwen3-Omni chat completions 模式
+      // 注意：不传 voice 参数，Qwen3-Omni 通过 system prompt 控制音色
+      const res = await fetch(`${baseUrl}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: "user", content: text }],
+          modalities: ["audio"],
+        }),
+      });
+      if (!res.ok) {
+        console.error(`QwenTTS chat API HTTP ${res.status}`);
+        return { status: -1 };
+      }
+      const payload = await res.json();
+      const b64 = payload?.choices?.[0]?.message?.audio?.data;
+      if (!b64) {
+        console.error("QwenTTS chat API: no audio.data in response");
+        return { status: -1 };
+      }
+      writeFileSync(tmpRaw, Buffer.from(b64, "base64"));
+    } else {
+      // 默认 speech 模式：直接返回二进制音频流
+      const res = await fetch(`${baseUrl}/v1/audio/speech`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          input: text,
+          voice: voiceId,
+          response_format: "wav",
+          ...(lang !== "en" && { language: lang }),
+          ...(instructions && { instructions }),
+        }),
+      });
+      if (!res.ok) {
+        console.error(`QwenTTS speech API HTTP ${res.status}`);
+        return { status: -1 };
+      }
+      const buf = Buffer.from(await res.arrayBuffer());
+      writeFileSync(tmpRaw, buf);
+    }
+
+    // 音频归一化：统一转码为 WAV 44.1kHz mono（与 HeyGen 路径一致）
+    const ff = spawnSync(
+      "ffmpeg",
+      ["-y", "-loglevel", "error", "-i", tmpRaw, "-ar", "44100", "-ac", "1", wavAbs],
+      { stdio: "ignore" },
+    );
+    rmSync(td, { recursive: true, force: true });
+    if (ff.status !== 0 || !existsSync(wavAbs)) {
+      console.error("QwenTTS: ffmpeg normalization failed");
+      return { status: -1 };
+    }
+    return { status: 0 };
+  } catch (err) {
+    console.error(`QwenTTS synthesis failed: ${err?.message || err}`);
+    rmSync(td, { recursive: true, force: true });
+    return { status: -1 };
+  }
+}
+
 async function ttsScene(s) {
   const txt = scratchPath(`${s.sceneId}.txt`);
   const wavRel = `assets/voice/${s.sceneId}.wav`;
 
   // HeyGen: inline REST (see synthesizeHeygen) — also writes the words JSON.
   if (provider === "heygen") return synthesizeHeygen(s);
+
+  // QwenTTS: local deployment (see synthesizeQwenTTS).
+  if (provider === "qwentts") return synthesizeQwenTTS(s);
 
   // ElevenLabs: direct python SDK (no CLI dependency).
   if (provider === "elevenlabs") {
