@@ -84,14 +84,14 @@ Default: `CustomVoice` (predefined speakers like `vivian`).
 | --------------------- | -------- | ------------------------------------------ | ----------------------------------------------- |
 | `QWENTTS_URL`         | Yes      | —                                          | Service base URL (e.g. `http://localhost:8091`)  |
 | `QWENTTS_MODE`        | No       | `speech`                                   | `speech` (binary stream) or `chat` (base64 JSON)|
-| `QWENTTS_MODEL`       | No       | `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice`    | Model name passed to the API                    |
 | `QWENTTS_VOICE`       | No       | `vivian`                                   | Voice name (speech mode only; list via `/v1/audio/voices`) |
 | `QWENTTS_INSTRUCTIONS`| No       | —                                          | Style/emotion instruction (e.g. `"Speak with great enthusiasm"`, CustomVoice model only) |
 
 ### Notes
 
 - All output is normalized to WAV 44.1kHz mono via ffmpeg (QwenTTS may output 24kHz PCM natively).
-- Non-English `--lang` is forwarded as the `language` field in the speech API request.
+- `model` and `response_format` are omitted from the request (server defaults to loaded model + wav format).
+- `language` is omitted by default (server Auto-detects); when `--lang` is non-English, mapped to full name (e.g. `zh` → `"Chinese"`). Supported: Auto, Chinese, English, Japanese, Korean, German, French, Russian, Portuguese, Spanish, Italian.
 - QwenTTS does not return word timestamps — chain `transcribe` after for caption data.
 - Voice names are QwenTTS-specific and not interchangeable with Kokoro/HeyGen/ElevenLabs.
 - When `QWENTTS_URL` is unset, the provider chain falls through to HeyGen → ElevenLabs → Kokoro.

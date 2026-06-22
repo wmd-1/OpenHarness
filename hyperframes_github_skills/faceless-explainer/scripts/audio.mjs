@@ -492,10 +492,16 @@ async function synthesizeQwenTTS(s) {
   const mode = (process.env.QWENTTS_MODE || "speech").toLowerCase();
   const wavAbs = join(hyperframesDir, `assets/voice/${s.sceneId}.wav`);
   const text = readFileSync(scratchPath(`${s.sceneId}.txt`), "utf8");
-  const model = process.env.QWENTTS_MODEL || "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice";
   const instructions = process.env.QWENTTS_INSTRUCTIONS || undefined;
   const td = mkdtempSync(join(tmpdir(), `hf-qwentts-${s.sceneId}-`));
   const tmpRaw = join(td, "raw_audio");
+
+  // vLLM-Omni /v1/audio/speech language 字段使用全称，省略时服务端 Auto 检测
+  const LANG_FULL_NAME = {
+    en: "English", zh: "Chinese", ja: "Japanese", ko: "Korean",
+    de: "German", fr: "French", ru: "Russian",
+    pt: "Portuguese", es: "Spanish", it: "Italian",
+  };
 
   try {
     if (mode === "chat") {
@@ -505,7 +511,6 @@ async function synthesizeQwenTTS(s) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model,
           messages: [{ role: "user", content: text }],
           modalities: ["audio"],
         }),
@@ -523,15 +528,16 @@ async function synthesizeQwenTTS(s) {
       writeFileSync(tmpRaw, Buffer.from(b64, "base64"));
     } else {
       // 默认 speech 模式：直接返回二进制音频流
+      // model/response_format 省略（服务端默认模型 + 默认 wav）
+      // language 省略时服务端 Auto 检测；非英文时映射为全称
+      const language = LANG_FULL_NAME[lang] || (lang !== "en" ? lang : undefined);
       const res = await fetch(`${baseUrl}/v1/audio/speech`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model,
           input: text,
           voice: voiceId,
-          response_format: "wav",
-          ...(lang !== "en" && { language: lang }),
+          ...(language && { language }),
           ...(instructions && { instructions }),
         }),
       });

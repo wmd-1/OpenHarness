@@ -36,6 +36,12 @@ services:
       # API Keys — 通过 .env 文件传入
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      # QwenTTS (本地 TTS 服务) — 通过 .env 文件传入
+      - QWENTTS_URL=${QWENTTS_URL:-}
+      - QWENTTS_MODE=${QWENTTS_MODE:-speech}
+      - QWENTTS_MODEL=${QWENTTS_MODEL:-}
+      - QWENTTS_VOICE=${QWENTTS_VOICE:-}
+      - QWENTTS_INSTRUCTIONS=${QWENTTS_INSTRUCTIONS:-}
     volumes:
       # 源码挂载 — 修改宿主机代码，容器内立即生效
       # PYTHONPATH=/app/src 使 Python 优先从这里导入，覆盖 pip 安装的版本
@@ -112,6 +118,12 @@ services:
       - HYPERFRAMES_NO_UPDATE_CHECK=1
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      # QwenTTS (本地 TTS 服务) — 通过 .env 文件传入
+      - QWENTTS_URL=${QWENTTS_URL:-}
+      - QWENTTS_MODE=${QWENTTS_MODE:-speech}
+      - QWENTTS_MODEL=${QWENTTS_MODEL:-}
+      - QWENTTS_VOICE=${QWENTTS_VOICE:-}
+      - QWENTTS_INSTRUCTIONS=${QWENTTS_INSTRUCTIONS:-}
     volumes:
       - ./src:/app/src
       - ./ohmo:/app/ohmo

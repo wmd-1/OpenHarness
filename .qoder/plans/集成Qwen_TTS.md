@@ -8,6 +8,10 @@
 - **voice 映射**: 直接用 QwenTTS 的 voice 名称（如 `vivian`），通过 `--voice` 参数传递；chat 模式下 voice 由模型 system prompt 控制，不传 voice 字段
 - **默认 voice**: `QWENTTS_VOICE` 环境变量，或默认 `vivian`
 - **音频归一化**: 所有模式输出统一经 ffmpeg 转码为 WAV 44.1kHz mono，与 HeyGen 路径保持一致，确保下游 whisper/ffprobe 正常工作
+- **API 可选字段省略策略**（基于 vLLM-Omni 官方文档）:
+  - `model`: 省略，服务端启动时已加载单一模型，无需每次请求指定
+  - `response_format`: 省略，服务端默认返回 `wav`
+  - `language`: 省略时服务端 `Auto` 自动检测；非英文时传全称（如 `"Chinese"`、`"English"`），**不是** ISO 代码（`"zh"`/`"en"`）
 
 ## 改动文件清单
 
@@ -80,10 +84,16 @@ async function synthesizeQwenTTS(s) {
   const mode = (process.env.QWENTTS_MODE || "speech").toLowerCase();
   const wavAbs = join(hyperframesDir, `assets/voice/${s.sceneId}.wav`);
   const text = readFileSync(scratchPath(`${s.sceneId}.txt`), "utf8");
-  const model = process.env.QWENTTS_MODEL || "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice";
   const instructions = process.env.QWENTTS_INSTRUCTIONS || undefined;
   const td = mkdtempSync(join(tmpdir(), `hf-qwentts-${s.sceneId}-`));
   const tmpRaw = join(td, "raw_audio");
+
+  // vLLM-Omni /v1/audio/speech language 字段使用全称，省略时服务端 Auto 检测
+  const LANG_FULL_NAME = {
+    en: "English", zh: "Chinese", ja: "Japanese", ko: "Korean",
+    de: "German", fr: "French", ru: "Russian",
+    pt: "Portuguese", es: "Spanish", it: "Italian",
+  };
 
   try {
     if (mode === "chat") {
@@ -93,7 +103,6 @@ async function synthesizeQwenTTS(s) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model,
           messages: [{ role: "user", content: text }],
           modalities: ["audio"],
         }),
@@ -111,15 +120,16 @@ async function synthesizeQwenTTS(s) {
       writeFileSync(tmpRaw, Buffer.from(b64, "base64"));
     } else {
       // 默认 speech 模式：直接返回二进制音频流
+      // model/response_format 省略（服务端默认模型 + 默认 wav）
+      // language 省略时服务端 Auto 检测；非英文时映射为全称
+      const language = LANG_FULL_NAME[lang] || (lang !== "en" ? lang : undefined);
       const res = await fetch(`${baseUrl}/v1/audio/speech`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model,
           input: text,
           voice: voiceId,
-          response_format: "wav",
-          ...(lang !== "en" && { language: lang }),
+          ...(language && { language }),
           ...(instructions && { instructions }),
         }),
       });
@@ -192,7 +202,9 @@ if (provider === "qwentts") return synthesizeQwenTTS(s);
 ## Task 5: 更新 `hyperframes_github_skills/hyperframes-media/references/tts.md`
 
 添加 QwenTTS provider 段落：
-- 环境变量说明（`QWENTTS_URL`、`QWENTTS_MODE`、`QWENTTS_MODEL`、`QWENTTS_VOICE`）
+- 环境变量说明（`QWENTTS_URL`、`QWENTTS_MODE`、`QWENTTS_VOICE`）
+- `model`/`response_format` 省略（服务端默认模型 + 默认 wav 格式）
+- `language` 省略时服务端 Auto 检测；非英文通过 ISO→全称映射传参（如 `zh` → `"Chinese"`）
 - 两种模式说明：speech（推荐，直接返回二进制流）vs chat（Qwen3-Omni，base64 JSON）
 - 与 Kokoro 的关系：qwentts 优先于 kokoro，设置 `QWENTTS_URL` 即自动切换
 
@@ -221,7 +233,6 @@ if (provider === "qwentts") return synthesizeQwenTTS(s);
 |------|------|--------|------|
 | `QWENTTS_URL` | 是 | 无 | 服务地址，如 `http://localhost:8091` |
 | `QWENTTS_MODE` | 否 | `speech` | `speech`（二进制流）或 `chat`（base64 JSON） |
-| `QWENTTS_MODEL` | 否 | `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` | 模型名称 |
 | `QWENTTS_VOICE` | 否 | `vivian` | 默认音色（仅 speech 模式；chat 模式由模型内部控制） |
 | `QWENTTS_INSTRUCTIONS` | 否 | — | 情感/风格指令（如 `"Speak with great enthusiasm"`，仅 CustomVoice 模型） |
 
