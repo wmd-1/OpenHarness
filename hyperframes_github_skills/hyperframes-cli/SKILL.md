@@ -16,6 +16,7 @@ Everything runs through `npx hyperframes` unless project instructions specify a 
 5. **Visual inspect** — `npx hyperframes inspect`
 6. **Preview** — `npx hyperframes preview` opens **Studio**, the timeline editor where the user can manually edit anything (not just watch). Review there, then ask before rendering.
 7. **Render** — pick the variant:
+   > **OpenHarness runtime:** Chrome is **already configured** via `PRODUCER_HEADLESS_SHELL_PATH` (`/opt/chrome-headless-shell-linux64/chrome-headless-shell`, injected by the runtime). **Just run `render` — don't set a chrome path, don't run `browser ensure`, and don't pass `--browser-path`** to `render` (that flag is ignored by `render`; it's `preview`/`play` only). Read `references/doctor-browser.md` only if `render` actually fails with a Chrome error.
    - Iterate: `npx hyperframes render --quality draft`
    - Deliver: `npx hyperframes render --quality high --output out.mp4`
    - CI / cross-host repro: `npx hyperframes render --docker --strict --output out.mp4`

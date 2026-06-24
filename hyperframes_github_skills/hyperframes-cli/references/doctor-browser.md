@@ -2,6 +2,20 @@
 
 Environment diagnosis and bundled-Chrome management. Run these first when a render or preview fails.
 
+> **⚠ OpenHarness runtime note** — Chrome is **already configured for you** in the OpenHarness Docker runtime: `PRODUCER_HEADLESS_SHELL_PATH` and `CHROME_HEADLESS_BIN` are both pre-set to `/opt/chrome-headless-shell-linux64/chrome-headless-shell` (injected by `service/app/workers/runner.py` and `docker-compose.yml`). **Do not set the Chrome path yourself, do not run `browser ensure`, and do not pass `--browser-path` to `render`. Just run `npx hyperframes render`.** Only read the rest of this file if `render` actually fails with a Chrome error.
+
+## Using a specific Chrome for `render`
+
+`render` does **not** accept `--browser-path` — that flag is `preview`/`play` only (see `preview-render.md`). To point `render` at a specific Chrome / chrome-headless-shell binary, set the **`PRODUCER_HEADLESS_SHELL_PATH`** environment variable:
+
+```bash
+PRODUCER_HEADLESS_SHELL_PATH=/opt/chrome-headless-shell-linux64/chrome-headless-shell \
+  npx hyperframes render --quality draft --output out.mp4
+```
+
+- `npx hyperframes browser ensure` downloads the **pinned bundled** Chrome (for reproducible pixel output across machines) — it does **not** adopt an existing binary, so it is the wrong tool when a Chrome path is already supplied by the environment.
+- `--browser-path` / `--user-data-dir` / `--remote-debugging-port` are `preview`/`play` flags and are ignored by `render`.
+
 ## doctor
 
 ```bash
@@ -29,7 +43,7 @@ Run `doctor` first when:
 Common issues:
 
 - **Missing FFmpeg** — install via `brew install ffmpeg` (macOS) or your package manager.
-- **Missing bundled Chrome** — run `npx hyperframes browser ensure`.
+- **Missing bundled Chrome** — run `npx hyperframes browser ensure`. **Caveat:** doctor's `Chrome` check only inspects the **bundled** build — it does **not** read `PRODUCER_HEADLESS_SHELL_PATH`. If you point `render` at a binary via that env var, doctor will still report Chrome as "not found"; that is **expected**. Gate on whether `render` actually succeeds, not on doctor's Chrome line.
 - **Low memory** — close other Chromes, reduce `--workers`, or use `--quality draft`.
 
 ## browser
