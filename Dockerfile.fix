@@ -13,11 +13,14 @@
 #     --build-arg BASE_IMAGE=openharness_hyperframes_qwen-tts:v0.1.9_v0.6.102_v1.2 \
 #     -t openharness_hyperframes_qwen-tts:v0.1.9_v0.6.102_v1.2 .
 #
-#   # 同时升级 Hyperframes 版本
+#   # 同时升级 Hyperframes 版本（较慢，约 1 分钟）
 #   docker build -f Dockerfile.fix \
 #     --build-arg BASE_IMAGE=openharness_hyperframes_qwen-tts:v0.1.9_v0.6.102_v1.2 \
 #     --build-arg HYPERFRAMES_VERSION=0.7.2 \
 #     -t openharness_hyperframes_qwen-tts:v0.1.9_v0.7.2_v1.3 .
+#
+# 说明：pptx-to-html skill 通过下方 COPY + pip install 内置到镜像；
+#       不再从 smithery 拉取（`--agent claude-code` 装到 ~/.claude/skills/，oh 不读取该目录）。
 # ============================================================================
 
 ARG BASE_IMAGE=openharness_hyperframes_qwen-tts:v0.1.9_v0.6.102_v1.2
@@ -31,6 +34,13 @@ RUN if [ -n "${HYPERFRAMES_VERSION}" ]; then \
 
 # ---- 更新镜像内置 skills（覆盖 /opt/oh-skills-builtin/）----
 COPY hyperframes_github_skills/ /opt/oh-skills-builtin/
+COPY pptx2html_github_skills/ /opt/oh-skills-builtin/
+
+# ---- 安装 pptx-to-html 的 Python 依赖到 OpenHarness venv ----
+# 主镜像未预装 python-pptx/openpyxl/fonttools；skill 运行时 python(=venv) 调用，
+# 故装到 /root/.openharness-venv（PATH 最前，运行时无需 activate）。
+RUN /root/.openharness-venv/bin/pip install --no-cache-dir \
+        -r /opt/oh-skills-builtin/pptx-to-html/requirements.txt
 
 # ---- 重写 wrapper 脚本（确保含 skills 同步逻辑）----
 RUN printf '#!/bin/bash\ncp -a /opt/oh-skills-builtin/. /root/.openharness/skills/ 2>/dev/null || true\nexec /root/.openharness-venv/bin/oh --permission-mode full_auto "$@"\n' > /root/.local/bin/oh \

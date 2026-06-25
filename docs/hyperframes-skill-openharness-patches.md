@@ -18,7 +18,7 @@
 | `hyperframes_github_skills_latest/` | 从 hyperframes github 同步的**上游原版最新** skill（当前为空，拉取目标） | 拉新版时填充，作为基线 |
 | `hyperframes_github_skills/` | **实际使用**的、已打 OpenHarness 补丁的版本 | Docker 构建时 `COPY` 进镜像；补丁打在这里 |
 
-镜像构建链路（[Dockerfile:98](../Dockerfile#L98)、[Dockerfile.fix:33](../Dockerfile.fix#L33)）：
+镜像构建链路（[Dockerfile:98](../Dockerfile#L98)、[Dockerfile.fix:36](../Dockerfile.fix#L36)）：
 
 ```
 hyperframes_github_skills/   ──Docker COPY──▶  /opt/oh-skills-builtin/  ──wrapper cp -a──▶  /root/.openharness/skills/  ──oh CLI 加载
@@ -440,9 +440,90 @@ docker exec openharness-api grep -c "OpenHarness runtime note" /root/.openharnes
 
 ---
 
-## 8. 变更历史
+## 8. pptx-to-html skill 适配（路径 + Python 依赖）
+
+> pptx-to-html 不是 HyperFrames skill，但与 hyperframes 共用同一条镜像构建链路（`COPY` 进 `/opt/oh-skills-builtin/` → wrapper 同步到 `/root/.openharness/skills/` → `oh` 加载），适配模式同型，故一并记录在此。
+
+### 8.1 意图
+
+把上游 `cskwork/pptx-to-html` skill 接入 OpenHarness，使其能在 `oh` 里把 `.pptx` 转成 HTML（再交 hyperframes 渲染成视频）。上游 skill 面向 smithery 云环境，有三处与 OpenHarness 不匹配，须打补丁：
+
+1. **Python 依赖缺失** — 主镜像 venv 未预装 `python-pptx` / `openpyxl` / `fonttools`，skill 跑转换会 `ModuleNotFoundError`。
+2. **路径写死云环境** — SKILL.md 全程用 `/mnt/skills/user/pptx-to-html/...` 与 `/mnt/user-data/...`，oh 实际加载路径是 `/root/.openharness/skills/pptx-to-html/`。
+3. **脚本名 / Phase 错位** — SKILL.md 引用 Phase 1 的 `convert_pptx_to_html.py`（仓库里已不存在），实际只有 `convert_pptx_to_html_v2.py`；且能力描述仍停留在 Phase 1（charts / SmartArt / animations 标"不支持"，v2 已实现）。
+
+### 8.2 涉及文件
+
+| 文件 | 补丁性质 |
+| --- | --- |
+| [Dockerfile.fix](../Dockerfile.fix) | 删无效的 `PPTX2HTML_VERSION` / `npx skills add --agent claude-code` 段（装到 `~/.claude/skills/`，oh 不读）；新增 `pip install -r requirements.txt` 到 `/root/.openharness-venv` |
+| `pptx-to-html/SKILL.md` | 脚本名 → `_v2.py`；路径 → `/root/.openharness/skills/pptx-to-html/`；去掉 `/mnt/user-data` 写死与 `computer://`；能力描述同步到 Phase 2 |
+| `pptx-to-html/README.md` | 删引用已移除的 Phase 1 脚本的两处（Basic Usage 的 legacy 示例 + 文件树 legacy 行） |
+
+### 8.3 Dockerfile.fix — 删 smithery 段 + 装 venv 依赖
+
+删除（对 oh 无效 —— `--agent claude-code` 装到 `~/.claude/skills/`，而 oh 只同步 `/opt/oh-skills-builtin/`）：
+
+```dockerfile
+# ---- 可选：升级 PPTX-TO-HTML 版本（不传则跳过）----
+ARG PPTX2HTML_VERSION=""
+RUN if [ -n "${PPTX2HTML_VERSION}" ]; then \
+        npx -y skills add https://smithery.ai/skills/cskwork/pptx-to-html --agent claude-code; \
+    fi
+```
+
+新增（放在两条 `COPY ... /opt/oh-skills-builtin/` 之后，跟着 skill 自带 `requirements.txt` 走）：
+
+```dockerfile
+# ---- 安装 pptx-to-html 的 Python 依赖到 OpenHarness venv ----
+RUN /root/.openharness-venv/bin/pip install --no-cache-dir \
+        -r /opt/oh-skills-builtin/pptx-to-html/requirements.txt
+```
+
+> 为何装到 venv：主 [Dockerfile](../Dockerfile#L87) 把 `/root/.openharness-venv/bin` 放在 `PATH` 最前，容器里 `python` / `python3` / `pip` 自动命中 venv，运行时无需 activate；安装时显式用 `/root/.openharness-venv/bin/pip` 最稳。
+
+### 8.4 SKILL.md — 路径 + 脚本名 + 能力描述
+
+**路径 / 脚本名替换**（4 处命令 + Workflow 叙述）：
+
+| 旧 | 新 |
+| --- | --- |
+| `/mnt/skills/user/pptx-to-html/scripts/convert_pptx_to_html.py` | `/root/.openharness/skills/pptx-to-html/scripts/convert_pptx_to_html_v2.py` |
+| `/mnt/user-data/uploads/<file>.pptx` | `<pptx-path>` / `/path/to/<file>.pptx`（不写死） |
+| `/mnt/user-data/outputs` | `<output-dir>` / `/path/to/output-dir` |
+| `computer:///mnt/user-data/outputs/<file>.html` | 直接给输出路径 |
+
+**能力描述同步到 Phase 2**（参照 skill 自带 `CLAUDE.md` 的 ✅ 清单）：
+
+- `What Gets Preserved` 补 Charts（Chart.js）/ Custom Shapes（SVG）/ SmartArt（文本层级）/ Animations / Shadows & Reflections。
+- `Current Limitations` 删去 charts / smartart / animations / shadows / custom-shapes 的"不支持"（v2 已实现），改写为 CLAUDE.md 的 Known Limitations（SmartArt 仅文本、custom fonts fallback、3D 不保留、master 复杂继承、Macros/VBA 永不支持）。
+- `Roadmap` 把上述项从 Phase 2/3 "In Progress / Future" 提升为 Phase 2 ✅ COMPLETED；Phase 3 仅留 embedded font extraction（FontManager，进行中）/ SmartArt 视觉布局 / 3D / master 继承。
+- `Troubleshooting` 修正两条矛盾项（"custom shapes / SmartArt unsupported" → 改为 SmartArt 视觉简化；"Tables on Phase 2 roadmap" → 改为 SmartArt 已知限制）。
+
+### 8.5 验证
+
+```bash
+# 依赖装到 venv
+docker exec <容器> /root/.openharness-venv/bin/python -c "import pptx,openpyxl,fonttools;print('ok')"
+
+# skill 同步到运行时目录 + 脚本存在
+docker exec <容器> ls /root/.openharness/skills/pptx-to-html/scripts/convert_pptx_to_html_v2.py
+
+# SKILL.md 路径已改、无云环境残留
+docker exec <容器> grep -c "/root/.openharness/skills/pptx-to-html" /root/.openharness/skills/pptx-to-html/SKILL.md
+docker exec <容器> grep -c "/mnt/skills/user\|/mnt/user-data" /root/.openharness/skills/pptx-to-html/SKILL.md  # 期望 0
+
+# 跑一次真实转换
+docker exec <容器> /root/.openharness-venv/bin/python \
+  /root/.openharness/skills/pptx-to-html/scripts/convert_pptx_to_html_v2.py /path/to/test.pptx /tmp/out
+```
+
+---
+
+## 9. 变更历史
 
 | 日期 | 提交 | 内容 |
 | --- | --- | --- |
 | 2026-06-23 | `de72011` (v1.3) | 升级 HyperFrames skill 至 v0.7.2；QwenTTS 接入共享音频引擎 `tts.mjs`（最高优先级 provider） |
 | 2026-06-24 | `4feb2ff` | skill 文档加 OpenHarness 运行时 Chrome 配置说明（`hyperframes-cli/SKILL.md` + `doctor-browser.md`） |
+| 2026-06-25 | — | 接入 pptx-to-html skill：删 Dockerfile.fix 的 smithery 段、装 venv 依赖、SKILL.md 路径 / 脚本名 / Phase 2 能力描述适配（见第 8 节） |

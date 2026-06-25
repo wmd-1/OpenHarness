@@ -1,0 +1,27 @@
+# TodoWrite Log
+
+- 2025-10-21: Initialized log to track progress on PPTX high fidelity conversion improvements.
+- 2025-10-21: Reviewed core modules (`scripts/convert_pptx_to_html_v2.py`, `scripts/logger.py`, `scripts/shape_geometry.py`, `scripts/chart_extractor.py`, `scripts/smartart_parser.py`, `scripts/animation_handler.py`) to map current architecture and fidelity behaviors.
+- 2025-10-21: Researched iSpring HTML5 conversion techniques to benchmark expected fidelity, layering, and asset handling practices.
+- 2025-10-21: Captured user requirements: exact layout, original fonts embedded, semantic recreation of complex elements, broad browser support with Chrome priority, external bundle allowed, fidelity over constraints, dependencies flexible.
+- 2025-10-21: Authored high-fidelity architecture plan (`docs/high_fidelity_plan.md`) covering pipeline refactor, font embedding, layout engine redesign, and testing strategy.
+- 2025-10-21: Added font management module (`scripts/font_manager.py`) and updated dependencies (fonttools) to support embedded font extraction.
+- 2025-10-21: Refactored `convert_pptx_to_html_v2.py` to produce pixel-aligned layout, external HTML/CSS/JS bundle, and integrated font embedding + responsive scaling runtime.
+- 2025-10-21: Updated shape and SmartArt rendering (`shape_geometry.py`, `smartart_parser.py`) for absolute positioning and z-index aware SVG/SmartArt output.
+- 2025-10-21: Documented implementation details and next steps in `docs/high_fidelity_update.md`.
+- 2025-10-21: Added grouped shape traversal with transform chaining, connector handling, and absolute chart/table placement for nested structures.
+- 2025-10-21: Loaded PPT theme palettes/backgrounds, cascaded slide-layout-master backgrounds, and applied theme-aware color conversion across text, fills, and gradients.
+- 2025-10-21: Implemented image-filled shape extraction (blipFill) with cropping/stretch support plus inline SVG/text overlay to prevent content loss.
+- 2025-10-21: Normalized custom-geometry viewBoxes so rectangles and filled blocks render at correct scale alongside their text content.
+- 2025-10-21: Honored text body anchors (top/center/bottom) via flex layout wrappers to align captions with their PPT positioning.
+- 2025-10-21: Converted `bodyPr` insets to CSS padding so text padding within shapes/tables matches the original layout.
+- 2025-10-21: Updated `extract_shape_position` to accept raw `a:xfrm` elements so tables and other graphic frames retain their PowerPoint coordinates.
+- 2025-10-22: Context7로 python-pptx 참조 문서를 요청했으나 레이트 리미트에 막혀 현장 구현 분석으로 우선 대응.
+- 2025-10-22: 핵심 모듈(`convert_pptx_to_html_v2.py`, `shape_geometry.py`, `smartart_parser.py`, `chart_extractor.py`, `animation_handler.py`, `font_manager.py`, `logger.py`)과 아키텍처 문서를 다시 검토하여 좌표 변환, 그룹 변환 체인, 절대 위치 렌더링 흐름을 정리.
+- 2025-10-22: 코드베이스에서 "placeholder" 키워드를 검색했으나 관련 구현이 없어 마스터/레이아웃 상속 포지셔닝이 미완성임을 확인.
+- 2025-10-22: 레이아웃·마스터 플레이스홀더 좌표를 병합하는 상속 로직과 그룹 회전 축을 반영한 좌표 보정 코드를 추가하고 샘플 PPT 변환으로 정상 동작을 확인.
+- 2025-10-22: 텍스트 렌더링 개선 1차 작업(세로 정렬 보정, wrap 옵션 반영, 라인 스페이싱 기반 높이 추정)과 표 셀 텍스트 스타일 정리를 적용하고 컴파일 검사까지 완료.
+- 2025-10-22: 그룹 변환 피벗을 추적해 요소별 `transform-origin`을 설정, 회전된 도형/이미지의 위치 오차를 슬라이드 전반에서 교정.
+- 2025-10-22: 그룹 변환 적용 순서를 내부→외부로 역전시켜 부모 좌표계 스케일/오프셋이 정확히 누적되도록 수정, 슬라이드 3 회전 요소 좌표가 PPT 범위(<1920px) 안에 안정화됨을 확인.
+- 2025-10-22: `ConversionLogger.warning`에 예외 메시지 병합을 추가해 애니메이션 파싱 경고 발생 시 TypeError로 슬라이드 처리가 중단되던 문제를 해결하고 8장 슬라이드를 모두 추출함.
+- 2025-10-22: 마스터·레이아웃 spTree에서 플레이스홀더가 아닌 템플릿 요소를 추출해 슬라이드 HTML에 병합, PPT 템플릿 로고/머리글이 그대로 반영되도록 구현.
