@@ -1,4 +1,13 @@
+# ignore everything under src
+src/*
+
+# but keep openharness
+!src/openharness/
+!src/openharness/**
+
 *.zip
+*.pptx
+test/
 output_hyperframes/
 *.mp4
 __pycache__/

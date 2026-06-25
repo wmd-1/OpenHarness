@@ -6,6 +6,7 @@ SmartArt Text Extraction
 """
 
 from typing import Dict, List, Optional
+from pptx_path import normalize_pptx_path
 from xml.etree import ElementTree as ET
 import zipfile
 
@@ -96,7 +97,7 @@ class SmartArtParser:
                 if rel.get('Id') == rel_id:
                     target = rel.get('Target')
                     # 상대 경로를 절대 경로로 변환
-                    smartart_path = f"ppt/{target.replace('..', '').lstrip('/')}"
+                    smartart_path = normalize_pptx_path(target)
                     return smartart_path
 
             return None

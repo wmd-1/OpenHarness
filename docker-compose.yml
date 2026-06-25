@@ -22,7 +22,7 @@ services:
         PYTHON_VERSION: "3.11"
         UV_VERSION: "0.7.3"
     # image: openharness:${OH_VERSION:-v0.1.9}
-    image: openharness_hyperframes_qwen-tts:${OH_VERSION_HYPERFRAMES_VERSION:-v0.1.9_v0.6.102_v1.2}
+    image: openharness_hyperframes_qwen-tts_pptx:${OH_VERSION_HYPERFRAMES_VERSION:-v0.1.9_v0.6.102_v1.2}
     container_name: openharness
     environment:
       - PYTHONUNBUFFERED=1

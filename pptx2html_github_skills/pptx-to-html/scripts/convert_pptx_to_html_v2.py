@@ -30,6 +30,7 @@ from shape_geometry import ShapeGeometryConverter
 from smartart_parser import SmartArtParser
 from animation_handler import AnimationHandler
 from font_manager import FontManager
+from pptx_path import normalize_pptx_path
 
 
 class EnhancedPPTXToHTMLV2:
@@ -128,7 +129,7 @@ class EnhancedPPTXToHTMLV2:
             if rel_type.endswith('/theme'):
                 target = rel.get('Target')
                 if target:
-                    theme_path = f"ppt/{target.replace('..', '').lstrip('/')}"
+                    theme_path = normalize_pptx_path(target)
                     break
 
         if not theme_path:
@@ -383,7 +384,7 @@ class EnhancedPPTXToHTMLV2:
             if rel_type.endswith('/slideMaster'):
                 target = rel.get('Target')
                 if target:
-                    return f"ppt/{target.replace('..', '').lstrip('/')}"
+                    return normalize_pptx_path(target)
 
         return None
 
@@ -1256,7 +1257,7 @@ class EnhancedPPTXToHTMLV2:
             is_video = 'video' in rel_type.lower() if rel_type else False
             is_audio = 'audio' in rel_type.lower() if rel_type else False
 
-            media_path = f"ppt/{target.replace('..', '').lstrip('/')}"
+            media_path = normalize_pptx_path(target)
 
             try:
                 media_data = zip_ref.read(media_path)
@@ -1454,7 +1455,7 @@ class EnhancedPPTXToHTMLV2:
             if rel_type.endswith('/slideLayout'):
                 target = rel.get('Target')
                 if target:
-                    return f"ppt/{target.replace('..', '').lstrip('/')}"
+                    return normalize_pptx_path(target)
         return None
 
     def _get_master_background(self, zip_ref, master_path: str) -> Optional[Dict]:
@@ -1505,7 +1506,7 @@ class EnhancedPPTXToHTMLV2:
                 if rel_type.endswith('/slideMaster'):
                     target = rel.get('Target')
                     if target:
-                        master_path = f"ppt/{target.replace('..', '').lstrip('/')}"
+                        master_path = normalize_pptx_path(target)
                     break
 
         bg = self._get_master_background(zip_ref, master_path) if master_path else None
@@ -2005,7 +2006,7 @@ class EnhancedPPTXToHTMLV2:
 
         for rel in pres_rels.findall('.//{http://schemas.openxmlformats.org/package/2006/relationships}Relationship'):
             if rel.get('Id') == slide_rel_id:
-                slide_path = f"ppt/{rel.get('Target')}"
+                slide_path = normalize_pptx_path(rel.get('Target'))
                 break
 
         if not slide_path:

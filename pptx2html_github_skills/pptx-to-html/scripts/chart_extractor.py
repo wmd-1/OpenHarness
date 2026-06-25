@@ -6,6 +6,7 @@ Chart Extraction and Chart.js Integration
 """
 
 from typing import Dict, List, Optional, Tuple
+from pptx_path import normalize_pptx_path
 from xml.etree import ElementTree as ET
 import zipfile
 from pathlib import Path
@@ -116,7 +117,7 @@ class ChartExtractor:
                 if rel.get('Id') == rel_id:
                     target = rel.get('Target')
                     # 상대 경로를 절대 경로로 변환
-                    chart_path = f"ppt/{target.replace('..', '').lstrip('/')}"
+                    chart_path = normalize_pptx_path(target)
                     return chart_path
 
             return None

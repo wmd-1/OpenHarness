@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from pptx_path import normalize_pptx_path
 from xml.etree import ElementTree as ET
 
 from fontTools.ttLib import TTFont
@@ -107,7 +108,7 @@ class FontManager:
             rel_id = rel.get('Id')
             target = rel.get('Target')
             if rel_id and target:
-                normalized = f"ppt/{target.replace('..', '').lstrip('/')}"
+                normalized = normalize_pptx_path(target)
                 rel_map[rel_id] = normalized
         return rel_map
 

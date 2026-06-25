@@ -518,6 +518,29 @@ docker exec <容器> /root/.openharness-venv/bin/python \
   /root/.openharness/skills/pptx-to-html/scripts/convert_pptx_to_html_v2.py /path/to/test.pptx /tmp/out
 ```
 
+### 8.6 上游 bug 修复：relationship Target 路径双重前缀
+
+**现象**：转换含 chart 的 PPTX 时报 `KeyError: "There is no item named 'ppt/ppt/charts/chart1.xml' in the archive"`；media / theme / master / smartart / font 同型失败（chart 先触发）。
+
+**根因**：上游 9 处用 `f"ppt/{target.replace('..', '').lstrip('/')}"` 把 relationship Target 拼成 zip 内路径。当 Target 已是绝对路径（`ppt/charts/chart1.xml`，WPS / Google Slides 导出常见）时，再拼 `ppt/` 前缀 → `ppt/ppt/...`，zip 找不到。
+
+**修法**：新增 `scripts/pptx_path.py` 定义 `normalize_pptx_path(target)` —— 剥 `..` / 前导 `/` / 双斜杠后，若已以 `ppt/` 开头则不再拼前缀。9 处调用点改用之：
+
+| 文件 | 调用点 |
+| --- | --- |
+| `chart_extractor.py` | chart 路径 |
+| `smartart_parser.py` | smartart 路径 |
+| `font_manager.py` | font 路径 |
+| `convert_pptx_to_html_v2.py` | theme / media / master / slide 路径 + 2 处 `return` |
+
+> 用公共 helper 而非就地改：9 处同型逻辑，单一来源更可维护；`scripts/` 已有同目录裸 import 模式（`from chart_extractor import ChartExtractor`），新模块无运行时风险。
+
+```bash
+# 语法自检（不需依赖）
+python3 -m py_compile scripts/pptx_path.py scripts/chart_extractor.py \
+  scripts/smartart_parser.py scripts/font_manager.py scripts/convert_pptx_to_html_v2.py
+```
+
 ---
 
 ## 9. 变更历史
@@ -527,3 +550,4 @@ docker exec <容器> /root/.openharness-venv/bin/python \
 | 2026-06-23 | `de72011` (v1.3) | 升级 HyperFrames skill 至 v0.7.2；QwenTTS 接入共享音频引擎 `tts.mjs`（最高优先级 provider） |
 | 2026-06-24 | `4feb2ff` | skill 文档加 OpenHarness 运行时 Chrome 配置说明（`hyperframes-cli/SKILL.md` + `doctor-browser.md`） |
 | 2026-06-25 | — | 接入 pptx-to-html skill：删 Dockerfile.fix 的 smithery 段、装 venv 依赖、SKILL.md 路径 / 脚本名 / Phase 2 能力描述适配（见第 8 节） |
+| 2026-06-25 | — | 修 pptx-to-html relationship 路径双重前缀 bug（`ppt/ppt/...` KeyError）：抽 `scripts/pptx_path.py` 公共 helper，9 处调用（见第 8.6 节） |
