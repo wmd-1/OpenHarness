@@ -45,7 +45,7 @@ export function pickProvider(userProvider) {
       throw new Error("provider=qwentts but $QWENTTS_URL is not set");
     if (userProvider === "heygen" && !heygenAvailable())
       throw new Error(
-        "provider=heygen but no HeyGen credentials (set $HEYGEN_API_KEY or run `hyperframes auth login`)",
+        "provider=heygen but no HeyGen credentials (set $HEYGEN_API_KEY or run `npx hyperframes auth login`)",
       );
     if (userProvider === "elevenlabs" && !process.env.ELEVENLABS_API_KEY)
       throw new Error("provider=elevenlabs but $ELEVENLABS_API_KEY is not set");
@@ -72,7 +72,11 @@ export async function resolveVoiceId({ provider, userVoice, lang = "en" }) {
     if (lang === "en") return "am_michael";
     throw new Error("Kokoro non-English needs an explicit --voice (see references/tts.md)");
   }
-  // heygen
+  // heygen — pin a fixed English default so the choice is deterministic. The old
+  // "first English voice the API returns" drifts whenever HeyGen re-sorts the
+  // public catalog. Marcia (mature, low female). Override with --voice / request.voice.
+  if (lang === "en") return "05f19352e8f74b0392a8f411eba40de1"; // Marcia · English · female
+  // Non-English: no fixed default — fall back to the first matching catalog voice.
   const payload = await heygenJSON(`/voices?engine=starfish&type=public&limit=50`, {
     headers: heygenAuthHeaders(),
   });

@@ -5,6 +5,8 @@ src/*
 !src/openharness/
 !src/openharness/**
 
+hyperframes_github_skills_latest/
+
 *.zip
 *.pptx
 test/

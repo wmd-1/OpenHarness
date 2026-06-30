@@ -10,20 +10,20 @@
 # 构建命令：
 #   # 仅更新 skills（最快，<5s）
 #   docker build -f Dockerfile.fix \
-#     --build-arg BASE_IMAGE=openharness_hyperframes_qwen-tts_pptx:v0.1.9_v0.7.2_v1.3_v1.0 \
-#     -t openharness_hyperframes_qwen-tts_pptx:v0.1.9_v0.7.2_v1.3_v2.0 .
+#     --build-arg BASE_IMAGE=openharness_hyperframes_qwen-tts_pptx:v0.1.9_v0.7.2_v1.3_v2.0\
+#     -t openharness_hyperframes_qwen-tts_pptx:v0.1.9_v0.7.20_v1.3_v2.0 .
 #
 #   # 同时升级 Hyperframes 版本（较慢，约 1 分钟）
 #   docker build -f Dockerfile.fix \
-#     --build-arg BASE_IMAGE=openharness_hyperframes_qwen-tts_pptx:v0.1.9_v0.7.2_v1.3_v1.0 \
-#     --build-arg HYPERFRAMES_VERSION=0.7.2 \
-#     -t openharness_hyperframes_qwen-tts:v0.1.9_v0.7.2_v1.3 .
+#     --build-arg BASE_IMAGE=openharness_hyperframes_qwen-tts_pptx:v0.1.9_v0.7.2_v1.3_v2.0 \
+#     --build-arg HYPERFRAMES_VERSION=0.7.20 \
+#     -t openharness_hyperframes_qwen-tts_pptx:v0.1.9_v0.7.20_v1.3_v2.0 .
 #
 # 说明：pptx-to-html skill 通过下方 COPY + pip install 内置到镜像；
 #       不再从 smithery 拉取（`--agent claude-code` 装到 ~/.claude/skills/，oh 不读取该目录）。
 # ============================================================================
 
-ARG BASE_IMAGE=openharness_hyperframes_qwen-tts_pptx:v0.1.9_v0.7.2_v1.3_v1.0
+ARG BASE_IMAGE=openharness_hyperframes_qwen-tts_pptx:v0.1.9_v0.7.2_v1.3_v2.0
 FROM ${BASE_IMAGE}
 
 # ---- 可选：升级 Hyperframes 版本（不传则跳过）----

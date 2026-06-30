@@ -28,10 +28,10 @@ Atomic capabilities you load **on demand** — not full video workflows. For "ma
 | You want to…                                                                                                                               | Skill                    |
 | ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------ |
 | **Author / edit an HTML composition** — the `data-*` contract, clips, tracks, sub-compositions, variables                                  | `/hyperframes-core`      |
-| **Author a slideshow / presentation / pitch deck** — discrete slides, fragments, branching, hotspots                                       | `/slideshow`             |
 | **Animate** — atomic motion, scene blueprints, transitions, runtime adapters (GSAP / Lottie / Three.js / Anime.js / CSS / WAAPI / TypeGPU) | `/hyperframes-animation` |
 | **Creative direction** — `frame.md` / `design.md`, palettes, typography, narration, beat planning, audio-reactive                          | `/hyperframes-creative`  |
 | **Media** — TTS voiceover, background music, transcription, background removal, captions                                                   | `/hyperframes-media`     |
+| **Media resolve** — find + freeze BGM, SFX, images, icons from HeyGen catalog into `.media/` with manifest tracking                        | `/media-use`             |
 | **CLI dev loop** — init, lint, validate, inspect, preview, render, publish, doctor                                                         | `/hyperframes-cli`       |
 | **Install registry blocks / components** (`hyperframes add`)                                                                               | `/hyperframes-registry`  |
 
@@ -51,24 +51,48 @@ Routing needs to know **what the video is about** — its input and subject. If 
 
 ## Workflow cheat-sheet
 
-| Workflow                   | Use it for                                                                                                                             |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `/product-launch-video`    | Marketing / launching / promoting a **product** — from its URL, a brief, or a script (even if the site is only named)                  |
-| `/website-to-video`        | Turning a **general website** into a video — site tour, portfolio / landing-page showcase, social clip from the site's visuals         |
-| `/faceless-explainer`      | **Explaining a topic / concept** from text — no product, no URL; every visual is LLM-invented                                          |
-| `/pr-to-video`             | A **GitHub PR / code change** → changelog / feature-reveal / fix / refactor explainer                                                  |
-| `/embedded-captions`       | Adding **captions / subtitles** to an existing talking-head video (footage untouched)                                                  |
-| `/graphic-overlays`        | Packaging an existing talking-head video with **designed graphic overlays** — lower-thirds, data callouts, kinetic titles, pull-quotes |
-| `/motion-graphics`         | A short, **unnarrated, design-led motion graphic** — kinetic type, a stat / chart hit, a logo sting, a lower-third overlay             |
-| `/general-video`           | **Anything else** — longer or multi-scene pieces, a static loop / poster, a custom composition                                         |
-| `/remotion-to-hyperframes` | **Porting an existing Remotion (React) composition** to HyperFrames (migration, not creation)                                          |
+| Workflow                   | Use it for                                                                                                                                                             |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/product-launch-video`    | Marketing / launching / promoting a **product** — from its URL, a brief, or a script (even if the site is only named)                                                  |
+| `/website-to-video`        | Turning a **general website** into a video — site tour, portfolio / landing-page showcase, social clip from the site's visuals                                         |
+| `/faceless-explainer`      | **Explaining a topic / concept** from text — no product, no URL; every visual is LLM-invented                                                                          |
+| `/pr-to-video`             | A **GitHub PR / code change** → changelog / feature-reveal / fix / refactor explainer                                                                                  |
+| `/embedded-captions`       | Adding **captions / subtitles** to an existing talking-head video (footage untouched)                                                                                  |
+| `/talking-head-recut`      | Packaging an existing talking-head video with **designed graphic overlays** — lower-thirds, data callouts, kinetic titles, pull-quotes                                 |
+| `/motion-graphics`         | A short, **unnarrated, design-led motion graphic** — kinetic type, a stat / chart hit, a logo sting, a lower-third overlay                                             |
+| `/music-to-video`          | A **music track** → a **beat-synced** video — lyric video, slideshow, or kinetic promo; the music drives pacing (optional user images / videos cut onto the beat grid) |
+| `/slideshow`               | A **presentation / pitch deck / interactive deck** — discrete slides, fragments, branching, hotspots; output is a navigable **deck**, not a rendered video             |
+| `/general-video`           | **Anything else** — longer or multi-scene pieces, a static loop / poster, a custom composition                                                                         |
+| `/remotion-to-hyperframes` | **Porting an existing Remotion (React) composition** to HyperFrames (migration, not creation)                                                                          |
 
 **Disambiguation (only where confusable):**
 
 - **Motion-first & unnarrated** (under ~10s, the motion _is_ the message) → `/motion-graphics`, regardless of input.
 - **A URL or script** — markets a specific product (even just naming the site) → `/product-launch-video`; a general non-product site → `/website-to-video`; a GitHub PR link → `/pr-to-video`; explains a concept with no product / site → `/faceless-explainer`. Genuinely unclear product-vs-topic, or launch-vs-general-site → ask one question.
-- **Existing footage** — plain spoken-word subtitles → `/embedded-captions`; designed overlay cards → `/graphic-overlays`. Neither edits the footage itself (re-timing / recolor / reframe / reorder / audio is NLE editing — out of scope).
+- **Existing footage** — plain spoken-word subtitles → `/embedded-captions`; designed overlay cards → `/talking-head-recut`. Neither edits the footage itself (re-timing / recolor / reframe / reorder / audio is NLE editing — out of scope).
+- **A music track is the input** (an audio file, or a video to pull audio from) with **no narration** → `/music-to-video` — the music's beats/energy drive the pacing. (Narrated pieces stay with the input-matched workflow above; `/motion-graphics` is for short unnarrated motion that isn't music-driven.)
+- **A presentation / pitch deck / interactive deck** (discrete slides, navigation, presenter mode) → `/slideshow` — output is a navigable deck, not a rendered video. An explicit "slideshow" request proceeds directly; an adjacent trigger ("deck / slides / presentation / convert this page") makes `/slideshow` confirm it's a slideshow before authoring, and switch to the appropriate non-slideshow workflow if not.
 - **Length is a guide, not a gate** — intent picks the workflow; go to `/general-video` only when the piece is clearly longer than ~3 min, or is a static / loop / custom format.
+
+## If the matched workflow isn't installed
+
+Once you've picked a workflow, check it's actually available to you. If the matched workflow skill isn't installed, don't fall back to guessing — tell the user to install it first:
+
+- **Just this workflow:** `npx skills add heygen-com/hyperframes --skill <workflow-name>` (e.g. `--skill pr-to-video` — bare name, no leading `/`).
+- **All workflows at once:** `npx skills add heygen-com/hyperframes --all` (core + every workflow, skips the picker).
+
+After they run it, re-read the workflow's skill and continue.
+
+## Keeping skills current
+
+HyperFrames skills are versioned. `npx hyperframes init` checks the installed skills against the latest on GitHub and installs/refreshes the **full** set whenever anything is out of date or missing — so a freshly init'd project always has the complete, latest set (and re-running init on an up-to-date project is a no-op). The check is a quick GitHub round-trip; offline (or rate-limited) it falls back to installing after a short timeout, so init never hard-fails on a network hiccup. The creation workflows scaffold with `init`, so starting a new project always runs this check and pulls our latest skills from GitHub when they're stale. The `--skip-skills` flag is currently neutered (a temporary measure while the skills.sh registry catches up): passing it no longer skips the check, so every `init` checks GitHub. CI/tests opt out via the `HYPERFRAMES_SKIP_SKILLS=1` env var.
+
+If a task is behaving unexpectedly, or before a long build, confirm the installed skills are current:
+
+- **Check:** `npx hyperframes skills check` (add `--json` for a machine-readable verdict; exits non-zero when anything is outdated **or missing**).
+- **Update:** `npx hyperframes skills update` — pulls the full set to the latest, **installing any not yet present** (same as init's install step).
+
+The CLI also surfaces a one-line reminder when a `render` / `lint` / `validate` run detects stale skills.
 
 ## Workflow details
 
@@ -102,7 +126,7 @@ Routing needs to know **what the video is about** — its input and subject. If 
 - **Output:** the same footage **untouched**, with a caption layer — **Standard** (verbatim lower-third rail + an embedded climax behind the subject) or **Cinematic** (every caption composited behind the subject). Any length.
 - **Triggers:** "add captions / subtitles to this video", "captions behind the subject", "cinematic captions for my clip".
 
-### `/graphic-overlays`
+### `/talking-head-recut`
 
 - **Input:** An existing **talking-head / interview / podcast video** (MP4) to package with on-screen graphics — actual footage. Transcribed locally (Whisper). The clip plays in full underneath, untouched.
 - **Output:** the same footage with timed **graphic-overlay cards** — kinetic titles, lower-thirds, data callouts, pull-quotes, side panels, picture-in-picture — synced to the transcript. Any length.
@@ -113,6 +137,18 @@ Routing needs to know **what the video is about** — its input and subject. If 
 - **Input:** A short, design-led motion graphic where the **motion is the message** — typically under ~10s, no narration. Genres: kinetic typography, a stat / number count-up, a chart hit, a logo sting, a lower-third / overlay, or a search-driven page / tweet / headline shot.
 - **Output:** a short motion graphic → MP4 or a **transparent overlay** (alpha WebM / MOV) for a lower-third / callout.
 - **Triggers:** "an 8s logo sting", "animate this stat", "a kinetic-type intro", "turn this tweet into a motion graphic", "a transparent lower-third overlay".
+
+### `/music-to-video`
+
+- **Input:** A **music track** — an audio file, or a video to pull the audio from — with **no narration and no website capture**. Optionally, user-supplied images / videos to weave in. The track is analyzed once into a deterministic beat / energy map (`audiomap.json`) the whole video is built on.
+- **Output:** a **beat-synced** HyperFrames composition → MP4 where the music drives pacing. Typography and templates are the floor (a complete video needs zero assets); any supplied media is cut onto the same beat grid (beat-cut / ken-burns). The genre — lyric video, slideshow, kinetic promo — emerges from the per-frame choices; the pipeline never branches on it.
+- **Triggers:** "make a video for this song", "beat-synced video from this track", "lyric video", "turn this music into a video", "music visualizer / kinetic promo to this beat".
+
+### `/slideshow`
+
+- **Input:** A **presentation / pitch deck / interactive deck** to author — a brief, an outline, or an existing page to convert to slides. Not a request for a rendered video; if the intent is ambiguous, the skill confirms "do you want this as a HyperFrames slideshow?" before authoring.
+- **Output:** a runnable HyperFrames composition + a **JSON island** the player's `SlideshowController` reads to turn the GSAP timeline into a navigable **deck** — discrete slides, fragment reveals, branching sequences, hotspot navigation, presenter mode, and speaker notes. The deliverable is a deck, not an MP4.
+- **Triggers:** "make a pitch deck / presentation / slide deck", "an interactive deck", "convert this page into slides", "a slideshow with presenter mode".
 
 ### `/general-video`
 

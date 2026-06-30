@@ -551,3 +551,4 @@ python3 -m py_compile scripts/pptx_path.py scripts/chart_extractor.py \
 | 2026-06-24 | `4feb2ff` | skill 文档加 OpenHarness 运行时 Chrome 配置说明（`hyperframes-cli/SKILL.md` + `doctor-browser.md`） |
 | 2026-06-25 | — | 接入 pptx-to-html skill：删 Dockerfile.fix 的 smithery 段、装 venv 依赖、SKILL.md 路径 / 脚本名 / Phase 2 能力描述适配（见第 8 节） |
 | 2026-06-25 | — | 修 pptx-to-html relationship 路径双重前缀 bug（`ppt/ppt/...` KeyError）：抽 `scripts/pptx_path.py` 公共 helper，9 处调用（见第 8.6 节） |
+| 2026-06-30 | — | 升级 HyperFrames skill 至 v0.7.20（拉取上游最新）；重新应用全部 QwenTTS + Chrome 路径补丁；`Dockerfile.fix` / `.env.example` 版本标签同步至 `v0.1.9_v0.7.20_v1.4` |
