@@ -10,9 +10,10 @@
 # 构建命令：
 #   # 仅更新 skills（最快，<5s）
 #   docker build -f Dockerfile.fix \
-#     --build-arg BASE_IMAGE=openharness_hyperframes_qwen-tts_pptx:v0.1.9_v0.7.2_v1.3_v2.0\
+#     --build-arg BASE_IMAGE=openharness_hyperframes_qwen-tts_pptx:v0.1.9_v0.7.20_v1.3_v2.0 \
 #     -t openharness_hyperframes_qwen-tts_pptx:v0.1.9_v0.7.20_v1.3_v2.0 .
-#
+# 
+
 #   # 同时升级 Hyperframes 版本（较慢，约 1 分钟）
 #   docker build -f Dockerfile.fix \
 #     --build-arg BASE_IMAGE=openharness_hyperframes_qwen-tts_pptx:v0.1.9_v0.7.2_v1.3_v2.0 \
@@ -41,6 +42,25 @@ COPY pptx2html_github_skills/ /opt/oh-skills-builtin/
 # 故装到 /root/.openharness-venv（PATH 最前，运行时无需 activate）。
 RUN /root/.openharness-venv/bin/pip install --no-cache-dir \
         -r /opt/oh-skills-builtin/pptx-to-html/requirements.txt
+
+# ---- 预下载 Whisper small 转录模型（~466 MB）到 ~/.cache/hyperframes/whisper/ ----
+# 几乎所有 skill 的语音转录都依赖此模型（embedded-captions, talking-head-recut 等）。
+# 生成 0.5s 静默音频触发 whisper.cpp 模型自动下载，即使转录结果为空也不影响。
+RUN ffmpeg -y -f lavfi -i anullsrc=r=16000:cl=mono -t 0.5 -c:a pcm_s16le /tmp/_dummy.wav \
+    && mkdir -p /tmp/_dummy_transcribe \
+    && hyperframes transcribe /tmp/_dummy.wav --model small -d /tmp/_dummy_transcribe 2>/dev/null || true \
+    && rm -rf /tmp/_dummy.wav /tmp/_dummy_transcribe
+
+# ---- 预下载 u2net_human_seg 人像抠图模型（~168 MB）到 ~/.cache/hyperframes/background-removal/models/ ----
+# embedded-captions 的 matte.cjs 通过 hyperframes remove-background 使用此 ONNX 模型。
+# 生成 64x64 黑色图片触发模型自动下载；模型加载在推理前完成，图片内容不影响下载。
+RUN ffmpeg -y -f lavfi -i color=c=black:s=64x64:d=0.04 -frames:v 1 /tmp/_dummy.png \
+    && hyperframes remove-background /tmp/_dummy.png -o /tmp/_dummy_out.png 2>/dev/null || true \
+    && rm -f /tmp/_dummy.png /tmp/_dummy_out.png
+
+# ---- 安装 music-to-video 的 Python 依赖（librosa, numpy, soundfile）----
+# music-to-video 的 analyze-beatgrid.py 音频分析需要此三件套。
+RUN /root/.openharness-venv/bin/pip install --no-cache-dir librosa numpy soundfile
 
 # ---- 重写 wrapper 脚本（确保含 skills 同步逻辑）----
 RUN printf '#!/bin/bash\ncp -a /opt/oh-skills-builtin/. /root/.openharness/skills/ 2>/dev/null || true\nexec /root/.openharness-venv/bin/oh --permission-mode full_auto "$@"\n' > /root/.local/bin/oh \
