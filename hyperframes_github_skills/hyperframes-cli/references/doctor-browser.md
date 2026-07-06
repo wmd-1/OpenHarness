@@ -43,7 +43,7 @@ Run `doctor` first when:
 Common issues:
 
 - **Missing FFmpeg** — install via `brew install ffmpeg` (macOS) or your package manager.
-- **Missing bundled Chrome** — run `npx hyperframes browser ensure`. **Caveat:** doctor's `Chrome` check only inspects the **bundled** build — it does **not** read `PRODUCER_HEADLESS_SHELL_PATH`. If you point `render` at a binary via that env var, doctor will still report Chrome as "not found"; that is **expected**. Gate on whether `render` actually succeeds, not on doctor's Chrome line.
+- **Missing bundled Chrome** — run `npx hyperframes browser ensure`. **Caveat:** doctor's `Chrome` check only inspects the **bundled** build — it does **not** read `PRODUCER_HEADLESS_SHELL_PATH`. If you point `render` at a binary via that env var, doctor will still report Chrome as "not found"; that is **expected**. Gate on whether `render` actually succeeds, not on doctor's Chrome line. **OpenHarness:** bundled Chrome is pre-installed at image build time (see `Dockerfile` / `Dockerfile.fix`), so it should never be missing at runtime — if `doctor` reports it missing, the image is stale; **rebuild** rather than running `browser ensure` at runtime (which would re-download and can hang).
 - **Low memory** — close other Chromes, reduce `--workers`, or use `--quality draft`.
 
 ## browser

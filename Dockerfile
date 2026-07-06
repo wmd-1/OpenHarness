@@ -60,6 +60,11 @@ ENV HYPERFRAMES_AUTO_UPDATE=false \
     HYPERFRAMES_NO_UPDATE_CHECK=1
 RUN npm install -g hyperframes@0.6.102 \
     && npx skills add heygen-com/hyperframes
+# 预装 hyperframes pinned bundled chrome：运行时 `browser ensure`/`doctor` 只认 bundled
+# chrome（不读 PRODUCER_HEADLESS_SHELL_PATH），空缓存会在第一次跑 skill 时触发 ~150MB
+# 下载并卡住。build 时一次性下载烧进镜像，运行时 ensure 即 find 到、no-op。
+# 临时 HYPERFRAMES_NO_AUTO_INSTALL=0 确保显式 ensure 能下载（运行时 ENV 的 =1 不动）。
+RUN HYPERFRAMES_NO_AUTO_INSTALL=0 npx hyperframes browser ensure
 # Chrome Headless Shell（从本地 docker/chrome/ 安装）
 # 预先下载：https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json
 COPY docker/chrome/chrome-headless-shell-linux64.zip /tmp/chrome-headless-shell-linux64.zip
