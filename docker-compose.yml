@@ -3,8 +3,8 @@
 # ============================================================================
 # 使用方法：
 #   docker compose up                          # 启动（显示 oh --help）
-#   docker compose run --rm openharness         # 同上
-#   docker compose run --rm shell              # 进入容器 bash 终端
+#   docker compose run --rm  --service-ports openharness         # 同上
+#   docker compose run --rm --service-ports  shell              # 进入容器 bash 终端
 #   docker compose run --rm openharness --version  # 运行 oh 子命令
 #
 # API Key 配置：
@@ -22,7 +22,7 @@ services:
         PYTHON_VERSION: "3.11"
         UV_VERSION: "0.7.3"
     # image: openharness:${OH_VERSION:-v0.1.9}
-    image: openharness_hyperframes_qwen-tts_pptx:${OH_VERSION_HYPERFRAMES_VERSION:-v0.1.9_v0.6.102_v1.2}
+    image: openharness_hyperframes_qwen-tts_pptx:${OH_VERSION_HYPERFRAMES_VERSION:-v0.1.9_v0.7.20_v1.3_v2.0}
     container_name: openharness
     environment:
       - PYTHONUNBUFFERED=1
@@ -51,15 +51,21 @@ services:
       - ./frontend:/app/frontend
       # 持久化配置和会话
       - openharness-config:/root/.openharness
+      - ./output_hyperframes/videos:/app/videos
     stdin_open: true
     tty: true
     shm_size: 256g
+    ports:
+      - "3000:3000"
+      - "3001:3001"
+      - "3002:3002"
+      - "3003:3003"
 
   # ---- 交互终端 ----
   # 直接进入 bash 即可，底层 wrapper 脚本已自动注入权限参数
   shell:
     extends: openharness
-    container_name: openharness-shell-${OH_VERSION_HYPERFRAMES_VERSION:-v0.1.9_v0.6.102}
+    container_name: openharness-shell-${OH_VERSION_HYPERFRAMES_VERSION:-v0.1.9_v0.7.20_v1.3_v2.0}
     entrypoint: ["bash"]
 
   # ---- PostgreSQL ----

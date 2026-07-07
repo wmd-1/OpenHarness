@@ -15,7 +15,7 @@
 | 目录 | 角色 | 处理方式 |
 | --- | --- | --- |
 | `hyperframes_container_skills/` | 旧版（过期） | **忽略**，不再维护 |
-| `hyperframes_github_skills_latest/` | 从 hyperframes github 同步的**上游原版最新** skill（当前为空，拉取目标） | 拉新版时填充，作为基线 |
+| `hyperframes_github_skills_latest/` | 从 hyperframes github 同步的**上游原版最新** skill（`.gitignore` 忽略、不入库；非空，是上次拉取的快照） | 拉新版时填充，与 `hyperframes_github_skills/` 比对确认 skill 集合一致后再覆盖，作为基线 |
 | `hyperframes_github_skills/` | **实际使用**的、已打 OpenHarness 补丁的版本 | Docker 构建时 `COPY` 进镜像；补丁打在这里 |
 
 镜像构建链路（[Dockerfile:98](../Dockerfile#L98)、[Dockerfile.fix:36](../Dockerfile.fix#L36)）：
@@ -374,35 +374,43 @@ RUN HYPERFRAMES_NO_AUTO_INSTALL=0 npx hyperframes browser ensure
 
 ### 5.1 `Dockerfile.fix` — BASE_IMAGE 标签
 
-`Dockerfile.fix` 的 `BASE_IMAGE` 默认值与示例命令需指向带 QwenTTS 的镜像 tag（`openharness_hyperframes_qwen-tts:...`，而非旧的 `openharness_hyperframes:...`）：
+`Dockerfile.fix` 的 `BASE_IMAGE` 默认值与示例命令需指向带 QwenTTS + pptx 的镜像 tag（`openharness_hyperframes_qwen-tts_pptx:...`，注意 `_pptx` 后缀；而非旧的 `openharness_hyperframes:...`）：
 
 ```dockerfile
-ARG BASE_IMAGE=openharness_hyperframes_qwen-tts:v0.1.9_v0.6.102_v1.2
+ARG BASE_IMAGE=openharness_hyperframes_qwen-tts_pptx:v0.1.9_v0.7.20_v1.3_v2.0
 FROM ${BASE_IMAGE}
 ```
 
+> tag 4 段含义：`v0.1.9`（OH）_ `v0.7.20`（HyperFrames npm）_ `v1.3`（QwenTTS/Chrome 补丁）_ `v2.0`（pptx 适配）。`.env.example` 的 `OH_VERSION_HYPERFRAMES_VERSION` 必须与此产出 tag 完全一致，否则 `docker compose up` 会因找不到镜像而误触发主 `Dockerfile` 全量构建（主 Dockerfile 钉 `hyperframes@0.6.102` 且无 pptx 的 COPY/pip，产出会缺 pptx skill 与依赖）。
+
 示例命令（注释里）：
 ```bash
-# 仅更新 skills
+# 仅更新 skills（最快，<5s）
 docker build -f Dockerfile.fix \
-  --build-arg BASE_IMAGE=openharness_hyperframes_qwen-tts:v0.1.9_v0.6.102_v1.2 \
-  -t openharness_hyperframes_qwen-tts:v0.1.9_v0.6.102_v1.2 .
+  --build-arg BASE_IMAGE=openharness_hyperframes_qwen-tts_pptx:v0.1.9_v0.7.20_v1.3_v2.0 \
+  -t openharness_hyperframes_qwen-tts_pptx:v0.1.9_v0.7.20_v1.3_v2.0 .
 
-# 同时升级 Hyperframes 版本
+# 同时升级 Hyperframes 版本（较慢，约 1 分钟）
 docker build -f Dockerfile.fix \
-  --build-arg BASE_IMAGE=openharness_hyperframes_qwen-tts:v0.1.9_v0.6.102_v1.2 \
-  --build-arg HYPERFRAMES_VERSION=0.7.2 \
-  -t openharness_hyperframes_qwen-tts:v0.1.9_v0.7.2_v1.3 .
+  --build-arg BASE_IMAGE=openharness_hyperframes_qwen-tts_pptx:v0.1.9_v0.7.20_v1.3_v2.0 \
+  --build-arg HYPERFRAMES_VERSION=0.7.20 \
+  -t openharness_hyperframes_qwen-tts_pptx:v0.1.9_v0.7.20_v1.3_v2.0 .
+
+# 按需预下载模型（Whisper small ~466MB / u2net ~168MB）+ 装 librosa
+docker build -f Dockerfile.fix \
+  --build-arg BASE_IMAGE=openharness_hyperframes_qwen-tts_pptx:v0.1.9_v0.7.20_v1.3_v2.0 \
+  --build-arg Model_Download=1 \
+  -t openharness_hyperframes_qwen-tts_pptx:v0.1.9_v0.7.20_v1.3_v2.0 .
 ```
 
 ### 5.2 `.env.example` — 版本标签
 
 ```bash
 # ---- 镜像版本标签 ----
-OH_VERSION_HYPERFRAMES_VERSION=v0.1.9_v0.7.2_v1.3
+OH_VERSION_HYPERFRAMES_VERSION=v0.1.9_v0.7.20_v1.3_v2.0
 ```
 
-> `.env` 被 `.gitignore` 忽略，`QWENTTS_URL` 占位符与镜像 tag v1.3 不入库，需在构建/运行环境单独配置。
+> `.env` 被 `.gitignore` 忽略，`QWENTTS_URL` 占位符与镜像 tag 不入库，需在构建/运行环境单独配置。此值必须与 `Dockerfile.fix` 产出 tag（5.1）及 `docker-compose.yml` 的 `image` 完全一致，否则 compose 找不到镜像。
 
 ### 5.3 `docker-compose.yml` — QwenTTS 环境变量
 
@@ -440,9 +448,9 @@ grep -c "OpenHarness runtime note" hyperframes_github_skills/hyperframes-cli/ref
 ### 6.2 容器侧（确认 api 服务加载的就是改过的 skill）
 
 ```bash
-# api 容器跑的是 v1.3 镜像
+# api 容器跑的是 v1.3_v2.0 镜像
 docker inspect openharness-api --format '{{.Config.Image}}'
-# 期望: openharness_hyperframes_qwen-tts:v0.1.9_v0.7.2_v1.3
+# 期望: openharness_hyperframes_qwen-tts_pptx:v0.1.9_v0.7.20_v1.3_v2.0
 
 # 镜像内置 skill 含 QwenTTS
 docker exec openharness-api grep -c qwentts /opt/oh-skills-builtin/hyperframes-media/scripts/lib/tts.mjs
@@ -586,5 +594,6 @@ python3 -m py_compile scripts/pptx_path.py scripts/chart_extractor.py \
 | 2026-06-24 | `4feb2ff` | skill 文档加 OpenHarness 运行时 Chrome 配置说明（`hyperframes-cli/SKILL.md` + `doctor-browser.md`） |
 | 2026-06-25 | — | 接入 pptx-to-html skill：删 Dockerfile.fix 的 smithery 段、装 venv 依赖、SKILL.md 路径 / 脚本名 / Phase 2 能力描述适配（见第 8 节） |
 | 2026-06-25 | — | 修 pptx-to-html relationship 路径双重前缀 bug（`ppt/ppt/...` KeyError）：抽 `scripts/pptx_path.py` 公共 helper，9 处调用（见第 8.6 节） |
-| 2026-06-30 | — | 升级 HyperFrames skill 至 v0.7.20（拉取上游最新）；重新应用全部 QwenTTS + Chrome 路径补丁；`Dockerfile.fix` / `.env.example` 版本标签同步至 `v0.1.9_v0.7.20_v1.4` |
-| 2026-07-06 | — | build 时预装 pinned bundled chrome（`Dockerfile` + `Dockerfile.fix` 加 `npx hyperframes browser ensure`），根治"第一次运行 skill 时 `browser ensure` 下载卡住"；`doctor-browser.md` Common issues 加 OpenHarness 预装说明，弱化运行时 ensure（见 4.5） |
+| 2026-06-30 | — | 升级 HyperFrames skill 至 v0.7.20（拉取上游最新）；重新应用全部 QwenTTS + Chrome 路径补丁；`.env.example` 同步至 `v0.1.9_v0.7.20_v1.4`、`Dockerfile.fix` 产出 tag 为 `v0.1.9_v0.7.20_v1.3_v2.0`（二者后缀不一致，见 2026-07-07 修正） |
+| 2026-07-06 | — | build 时预装 pinned bundled chrome（`Dockerfile` + `Dockerfile.fix` 加 `npx hyperframes browser ensure`），根治"第一次运行 skill 时 `browser ensure` 下载卡住"；`doctor-browser.md` Common issues 加 OpenHarness 预装说明，弱化运行时 ensure（见 4.5）；`Dockerfile.fix` 模型预下载（Whisper small / u2net）与 librosa 安装改为 `ARG Model_Download` 条件触发 |
+| 2026-07-07 | — | 修正版本标签不一致：`.env.example` + `docker-compose.yml` 默认 fallback 对齐 `Dockerfile.fix` 产出 tag `v0.1.9_v0.7.20_v1.3_v2.0`（原先 `.env.example` 为 `v1.4`，按模板部署会找不到镜像而误触发主 Dockerfile 全量构建）；重写第 5 节版本标签（镜像名补 `_pptx`、补 `Model_Download` 示例）；第 1 节 `latest` 描述修正（不再"当前为空"） |
