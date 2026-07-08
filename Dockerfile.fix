@@ -83,10 +83,13 @@ RUN _SITE_PKGS=$(/root/.openharness-venv/bin/python -c "import site; print(site.
     && cd "$_SITE_PKGS/openharness/_frontend" \
     && npm install --no-fund --no-audit
 
-# ---- 重写 wrapper 脚本（确保含 skills 同步逻辑）----
-RUN printf '#!/bin/bash\ncp -a /opt/oh-skills-builtin/. /root/.openharness/skills/ 2>/dev/null || true\nexec /root/.openharness-venv/bin/oh --permission-mode full_auto "$@"\n' > /root/.local/bin/oh \
-    && printf '#!/bin/bash\ncp -a /opt/oh-skills-builtin/. /root/.openharness/skills/ 2>/dev/null || true\nexec /root/.openharness-venv/bin/ohmo --permission-mode full_auto "$@"\n' > /root/.local/bin/ohmo \
-    && printf '#!/bin/bash\ncp -a /opt/oh-skills-builtin/. /root/.openharness/skills/ 2>/dev/null || true\nexec /root/.openharness-venv/bin/openharness --permission-mode full_auto "$@"\n' > /root/.local/bin/openharness \
+# ---- 重写 wrapper 脚本（含 skills 同步 + React TUI node_modules 兜底）----
+# node_modules 兜底：当源码挂载（./frontend:/app/frontend）遮蔽了镜像内置的
+# pip 包 _frontend/ 路径时，启动 oh 会自动命中 dev 路径（/app/frontend/terminal/），
+# 但该路径没有预装的 node_modules。此处将镜像预装的 node_modules 复制过去。
+RUN printf '#!/bin/bash\ncp -a /opt/oh-skills-builtin/. /root/.openharness/skills/ 2>/dev/null || true\n_FE_SRC=$(/root/.openharness-venv/bin/python -c "import site; print(site.getsitepackages()[0])")/openharness/_frontend\n[ -f /app/frontend/terminal/package.json ] && [ -d "$_FE_SRC/node_modules" ] && [ ! -f /app/frontend/terminal/node_modules/.bin/tsx ] && (rm -rf /app/frontend/terminal/node_modules 2>/dev/null; cp -a "$_FE_SRC/node_modules" /app/frontend/terminal/node_modules 2>/dev/null) || true\nexec /root/.openharness-venv/bin/oh --permission-mode full_auto "$@"\n' > /root/.local/bin/oh \
+    && printf '#!/bin/bash\ncp -a /opt/oh-skills-builtin/. /root/.openharness/skills/ 2>/dev/null || true\n_FE_SRC=$(/root/.openharness-venv/bin/python -c "import site; print(site.getsitepackages()[0])")/openharness/_frontend\n[ -f /app/frontend/terminal/package.json ] && [ -d "$_FE_SRC/node_modules" ] && [ ! -f /app/frontend/terminal/node_modules/.bin/tsx ] && (rm -rf /app/frontend/terminal/node_modules 2>/dev/null; cp -a "$_FE_SRC/node_modules" /app/frontend/terminal/node_modules 2>/dev/null) || true\nexec /root/.openharness-venv/bin/ohmo --permission-mode full_auto "$@"\n' > /root/.local/bin/ohmo \
+    && printf '#!/bin/bash\ncp -a /opt/oh-skills-builtin/. /root/.openharness/skills/ 2>/dev/null || true\n_FE_SRC=$(/root/.openharness-venv/bin/python -c "import site; print(site.getsitepackages()[0])")/openharness/_frontend\n[ -f /app/frontend/terminal/package.json ] && [ -d "$_FE_SRC/node_modules" ] && [ ! -f /app/frontend/terminal/node_modules/.bin/tsx ] && (rm -rf /app/frontend/terminal/node_modules 2>/dev/null; cp -a "$_FE_SRC/node_modules" /app/frontend/terminal/node_modules 2>/dev/null) || true\nexec /root/.openharness-venv/bin/openharness --permission-mode full_auto "$@"\n' > /root/.local/bin/openharness \
     && chmod +x /root/.local/bin/oh /root/.local/bin/ohmo /root/.local/bin/openharness
 
 # ---- hf-preview：hyperframes preview 包装脚本（自动 socat 转发 0.0.0.0:3002 → 127.0.0.1:30020）----
