@@ -5,9 +5,10 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.models import TaskStatus
+from app.security import vet_extra_oh_args
 
 
 # ---- Request ----
@@ -17,6 +18,17 @@ class VideoCreateRequest(BaseModel):
     timeout_seconds: int = Field(default=900, ge=30, le=3600)
     extra_oh_args: list[str] = Field(default_factory=list)
     idempotency_key: str | None = None
+
+    @field_validator("extra_oh_args")
+    @classmethod
+    def _vet_extra_oh_args(cls, v: list[str]) -> list[str]:
+        # Fail fast at the API edge (422) so the worker never sees a bad flag.
+        from app.security import InvalidOhArgError
+
+        try:
+            return vet_extra_oh_args(v)
+        except InvalidOhArgError as exc:
+            raise ValueError(str(exc)) from exc
 
 
 # ---- Response ----

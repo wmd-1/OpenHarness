@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import signal
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from subprocess import PIPE, STDOUT, Popen
@@ -23,6 +24,7 @@ def run_oh(
     timeout: int = 900,
     on_log_line: Callable[[str], None] | None = None,
     extra_args: list[str] | None = None,
+    is_aborted: Callable[[], bool] | None = None,
     oh_bin: str = "/root/.local/bin/oh",
     headless_shell_path: str = "/opt/chrome-headless-shell-linux64/chrome-headless-shell",
 ) -> RunResult:
@@ -34,6 +36,10 @@ def run_oh(
         timeout: Maximum wall-clock seconds before killing the process.
         on_log_line: Callback invoked for each line of combined stdout/stderr.
         extra_args: Additional CLI flags forwarded to ``oh``.
+        is_aborted: Optional predicate polled during execution. When it returns
+            ``True``, the whole ``oh`` process group is terminated (SIGTERM then
+            SIGKILL). Used to honor user cancellation without relying on the
+            Celery worker receiving the revoke signal.
         oh_bin: Path to the ``oh`` binary.
         headless_shell_path: Path to chrome-headless-shell binary.
 
@@ -65,6 +71,28 @@ def run_oh(
         preexec_fn=os.setsid,
     )
 
+    # ``setsid`` makes ``oh`` its own session/process-group leader, so
+    # ``proc.pid`` is the pgid. Killing it tears down ``oh`` *and* its chrome
+    # children (important for cancellation).
+    pgid = proc.pid
+
+    def _kill_group(signum: int) -> None:
+        try:
+            os.killpg(pgid, signum)
+        except OSError:
+            pass
+
+    def _watchdog() -> None:
+        # Poll the abort predicate while the process is alive.
+        while proc.poll() is None:
+            if is_aborted is not None and is_aborted():
+                _kill_group(signal.SIGTERM)
+                return
+            time.sleep(0.5)
+
+    watchdog_thread = Thread(target=_watchdog, daemon=True)
+    watchdog_thread.start()
+
     lines: list[str] = []
 
     def _reader() -> None:
@@ -82,20 +110,15 @@ def run_oh(
         proc.wait(timeout=timeout)
     except Exception:
         # Kill the entire process group
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except OSError:
-            pass
+        _kill_group(signal.SIGTERM)
         try:
             proc.wait(timeout=10)
         except Exception:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except OSError:
-                pass
+            _kill_group(signal.SIGKILL)
             proc.wait()
 
     reader_thread.join(timeout=5)
+    watchdog_thread.join(timeout=2)
 
     return RunResult(
         exit_code=proc.returncode if proc.returncode is not None else -1,

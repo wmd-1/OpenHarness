@@ -26,11 +26,17 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS (allow all for development)
+# CORS — explicit origins only. Credentials are enabled solely when origins
+# are explicitly configured; otherwise no cross-origin access is granted.
+_cors_origins = (
+    [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+    if settings.cors_origins
+    else []
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=bool(_cors_origins),
     allow_methods=["*"],
     allow_headers=["*"],
 )
