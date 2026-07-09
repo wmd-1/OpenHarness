@@ -2,7 +2,8 @@
 
 **Change ID:** `harden-hyperframes-video-service`
 **Created:** 2026-07-09
-**Status:** Draft
+**Status:** Implementation Complete
+**Completed:** 2026-07-09
 **Reviewer:** WorkBuddy — openspec + superpowers review
 **Baseline:** `.qoder/plans/FastAPI_Hyperframes_Video_Service_3217f912.md` (plan) vs `service/` implementation
 
@@ -49,6 +50,46 @@ Group the fixes into three phases (see `tasks.md`):
    retries; extend tests to cover `runner.run_oh` mocking, SSE, real 200 stream, and a
    Postgres-native run; remove unused dep; fix SSE replay window; null `output_path` on
    cleanup.
+
+## Detailed Design
+
+The full, code-level design for **all 14 items** (intended diffs, verification steps, and
+risks) is in **[`design.md`](./design.md)**. Each item below maps to a `design.md`
+section:
+
+| # | Severity | Topic | Design section |
+|---|----------|-------|----------------|
+| 1 | 🔴 | `extra_oh_args` allowlist | §#1 |
+| 2 | 🔴 | RUNNING cancel kills process group + no overwrite | §#2 |
+| 3 | 🔴 | Non-blocking streaming | §#3 |
+| 4 | 🟠 | Beat schedules cleanup | §#4 |
+| 5 | 🟠 | `_append_log` pooled connection | §#5 |
+| 6 | 🟠 | Alembic async driver | §#6 |
+| 7 | 🟠 | CORS origins | §#7 |
+| 8 | 🟡 | `Range`/206 support | §#8 |
+| 9 | 🟡 | Idempotency race → 500 | §#9 |
+| 10 | 🟡 | Deterministic failure `raise` | §#10 |
+| 11 | 🟡 | Test coverage gaps | §#11 |
+| 12 | 🟡 | Unused `ffmpeg-python` | §#12 |
+| 13 | 🟡 | SSE replay duplicate | §#13 |
+| 14 | 🟡 | Cleanup nulls `output_path` | §#14 |
+
+Implementation file map (when applied):
+
+| File | Items |
+|------|-------|
+| `service/app/security.py` (new) | #1 |
+| `service/app/schemas.py` | #1 |
+| `service/app/workers/runner.py` | #2 |
+| `service/app/workers/tasks.py` | #2, #5, #10, #14 |
+| `service/app/routers/videos.py` | #2, #3, #8, #9 |
+| `service/app/workers/celery_app.py` | #4 |
+| `docker/supervisord.conf` | #4 |
+| `service/alembic/env.py` | #6 |
+| `service/app/config.py` | #6, #7 |
+| `service/app/main.py` | #7 |
+| `service/pyproject.toml` | #12 |
+| `tests/service/test_worker.py` (new) | #11 |
 
 ## Scope
 
@@ -106,3 +147,39 @@ Group the fixes into three phases (see `tasks.md`):
 | Whitelist too strict breaks legitimate `oh` flags | Med | Low | Start with a documented allowlist + passthrough for safe value-flags; log rejected args |
 | `killpg` on cancel races with normal completion | Low | Med | Worker re-checks `status==CANCELED` after `run_oh` returns before `_mark_succeeded` |
 | Beat double-runs cleanup across scaled replicas | Low | Low | Query is idempotent (files may already be gone); safe to no-op |
+
+---
+
+## Archive Information
+
+**Archived:** 2026-07-09 11:18
+**Duration:** 0 days (proposed and implemented same day: created 2026-07-09, archived 2026-07-09)
+**Outcome:** Successfully implemented and verified — full suite **50 passed** in the
+`openharness_hyperframes_qwen-tts_pptx:v0.1.9_v0.7.20_v1.3_v2.0` image (WSL2 Docker).
+
+### Files Modified
+- `service/app/security.py` (new) — `extra_oh_args` allowlist validation (#1)
+- `service/app/schemas.py` — reject/normalize `extra_oh_args` at boundary (#1)
+- `service/app/workers/runner.py` — `run_oh` process-group kill on cancel; `/proc` liveness check (#2)
+- `service/app/workers/tasks.py` — cancellation guard before success; `_append_log` pooling; TransientError-only retry; null `output_path` on cleanup (#2, #5, #10, #14)
+- `service/app/routers/videos.py` — async non-blocking streaming; real `Range`/206; idempotency conflict fallback (#2, #3, #8, #9)
+- `service/app/workers/celery_app.py` — `cleanup_expired_tasks` in `beat_schedule` (#4)
+- `docker/supervisord.conf` — `[program:beat]` entry (#4)
+- `service/alembic/env.py` — unified `postgresql+asyncpg://` (#6)
+- `service/app/config.py` — async dialect setting; CORS origins (#6, #7)
+- `service/app/main.py` — restricted CORS (#7)
+- `service/pyproject.toml` — drop unused `ffmpeg-python` (#12)
+- `Dockerfile` — hardened dependencies/layers
+- `tests/service/test_videos_api.py` — updated assertions for new behavior
+- `tests/service/test_worker.py` (new) — runner execution + process-group kill (#11)
+- `tests/service/test_security.py` (new) — `extra_oh_args` allowlist (#11)
+- `tests/service/test_sse.py` (new) — SSE replay-window fix (#11, #13)
+- `tests/service/test_runner.py` (new) — real process termination integration (#2)
+- `tests/service/test_streaming.py` (new) — 200 full / 206 range download (#3, #8)
+- `tests/service/test_cleanup.py` (new) — cleanup idempotency + artifact removal (#4, #14)
+- `tests/service/test_api_edge.py` (new) — CORS + idempotency race fallback (#7, #9)
+
+### Specs Updated
+- `openspec/specs/video-service-hardening.md` — created as baseline source-of-truth spec from the
+  `video-service-hardening_delta.md` (6 requirements: secure-oh-args, running-cancel-kills-group,
+  non-blocking-streaming, scheduled-cleanup, redis-pooled-logging, cors-no-wildcard-with-credentials).
