@@ -1,7 +1,7 @@
 # ignore everything under src
 .claude/
 .qoder/
-openspec/
+# openspec/
 
 src/*
 hyperframes_github_skills.bak*/
