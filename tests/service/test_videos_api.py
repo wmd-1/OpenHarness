@@ -123,6 +123,19 @@ class TestCreateVideo:
         )
         assert response.status_code == 422
 
+    @patch("app.routers.videos.generate_video_task")
+    async def test_create_video_rejects_forbidden_oh_arg(self, mock_celery, client: AsyncClient):
+        """Should reject disallowed extra_oh_args with 422 at the API edge."""
+        mock_celery.delay = MagicMock()
+        response = await client.post(
+            "/v1/videos",
+            json={
+                "prompt": "Test",
+                "extra_oh_args": ["--permission-mode", "evil"],
+            },
+        )
+        assert response.status_code == 422
+
 
 class TestGetVideo:
     """GET /v1/videos/{task_id}"""

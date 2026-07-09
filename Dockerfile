@@ -83,8 +83,7 @@ RUN python -m venv /root/.openharness-venv \
         sqlalchemy[asyncio]==2.0.* asyncpg==0.30.* psycopg[binary]==3.2.* \
         alembic==1.14.* \
         celery[redis]==5.4.* redis==5.2.* \
-        pydantic-settings==2.6.* sse-starlette==2.1.* python-multipart \
-        ffmpeg-python==0.2.*
+        pydantic-settings==2.6.* sse-starlette==2.1.* python-multipart
 # ElevenLabs 云端 TTS（可选，需 API Key，按需取消注释）：
 # RUN uv pip install --python /root/.openharness-venv/bin/python elevenlabs
 
