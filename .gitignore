@@ -2,6 +2,7 @@
 .claude/
 .qoder/
 # openspec/
+!.qoder/plans/
 
 src/*
 hyperframes_github_skills.bak*/
