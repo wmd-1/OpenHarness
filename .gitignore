@@ -4,6 +4,7 @@
 openspec/
 
 src/*
+hyperframes_github_skills.bak*/
 
 # but keep openharness
 !src/openharness/
