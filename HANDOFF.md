@@ -6,7 +6,7 @@
 ## 1. 项目是什么
 - 仓库：OpenHarness（fork 自上游；PR 提往 `wmd-1/OpenHarness` 的 `main`）。
 - 组件：`service/` = HyperFrames FastAPI + Celery 视频生成服务（渲染用 `oh` CLI / Chrome / ffmpeg）。
-- **规范工作目录（本次会话归正后）**：`D:\WorkBuddy-Workspace\Openharness_hyperprames_Development\OpenHarness\`（纯英文，避免中文路径挂载抖动）。旧的中文目录（`Openharness_hyperprames开发` 带/不带 f）均为遗留，勿在此工作。
+- **规范工作目录（本次会话归正后）**：`D:\WorkBuddy-Workspace\Openharness_hyperframes_Development\OpenHarness\`（纯英文，避免中文路径挂载抖动）。旧的中文目录（`Openharness_hyperframes开发` 带/不带 f）均为遗留，勿在此工作。
 
 ## 2. 当前进度
 - **一阶段 `harden-hyperprames-video-service`**：已实施并合并入 `main`。14 项加固（extra_oh_args allowlist、CORS 不配通配+凭证、supervisord `[program:beat]` 定时清理、取消杀进程组且不得标 SUCCEEDED、Redis 连接池、Stream 替代 list+pubsub 实现 SSE、确定性失败不重抛、cleanup 置空指针、Range/206 流式、idempotency 竞态修复、删除置空、移除死依赖 ffmpeg-python、对象存储 presigned 预留）。
