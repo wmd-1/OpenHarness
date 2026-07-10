@@ -25,10 +25,11 @@
 2. **状态机强一致**：所有状态变更走 PostgreSQL 条件 UPDATE（行锁 claim），`recover_lost_tasks` 翻转幂等，success guard 防终态覆盖。
 3. **Ownership / Reclaim（heartbeat 机制）**：worker 级 Redis 注册（TTL 20s，每 10s 刷新）+ task 级 `heartbeat_at`（60s 阈值）两层级存活检测；reclaim 仅当两信号都判失联时发生。**重要定性**：这是 heartbeat + TTL，不是严格 lease/fencing——显著降低双跑、可靠防止状态覆盖，但不严格证明绝不双跑（剩余风险 §11.7）。
 4. **对象存储 + 可观测性**：`VideoStorage` Protocol 增加 `presigned_url`，新增 `S3VideoStorage`（补齐 delete/exists）；`/file` 默认 302 到 presigned、敏感内容 `?mode=stream` 回退流式。新增 metrics / traces / structured logs 与 `/readyz`。
+5. **单实例并发控制**：worker 按 `priority` 路由分级队列（high/normal/low）+ 全局并发信号量 `MAX_CONCURRENT_RENDERS` 限制同时渲染的 `oh` 进程数，保护 Chrome/ffmpeg 内存，兑现 Scope 中「单实例内可控并发（队列分级 + 并发上限 + 全局信号量）」的承诺（落地见 tasks Phase 7）。
 
 ## Detailed Design
 
-完整代码级设计见 **[`.qoder/plans/Phase2_Multi-Instance_Scaling_3217f912.md`](../.qoder/plans/Phase2_Multi-Instance_Scaling_3217f912.md)**，关键章节映射：
+完整代码级设计见 **[`.qoder/plans/Phase2_Multi-Instance_Scaling_3217f912.md`](../../.qoder/plans/Phase2_Multi-Instance_Scaling_3217f912.md)**，关键章节映射：
 
 | 主题 | Plan 章节 |
 |------|-----------|
@@ -126,3 +127,6 @@
 | 改 result_backend 到 PG 的负载/迁移风险 | — | — | 不改为 PG，保持 Redis（已消除） |
 | 可观测性 sidecar 未部署致指标缺失 | Med | Med | prod compose 纳入 otel/prom；可选模块，缺省不影响核心 |
 | 多 beat 并发 cleanup 双清 | Low | Low | cleanup 幂等；reclaim 翻转幂等（§11.3） |
+| Redis 全不可用致存活检测失效 | Med | High | 已知边界：Redis HA（哨兵/集群）不在本 change 范围，依赖既有部署；Redis 全宕时 worker 注册/心跳/取消键均不可用，reclaim 与跨副本取消语义降级（§11.7 剩余风险延伸，不纳入正常验收） |
+
+> **Redis 高可用边界**：Redis 哨兵 / 集群等高可用部署**不在本 change 范围**，依赖既有部署环境。Redis 完全不可用时，worker 存活注册、heartbeat、取消 key 全部失效，reclaim 与跨副本取消语义降级——此为 §11.7 剩余风险的延伸，不作为正常宕机验收门禁。
