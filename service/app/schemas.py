@@ -78,3 +78,17 @@ class HealthResponse(BaseModel):
     status: str
     db: str
     redis: str
+    # Present only when storage_kind == "s3"; "error" means S3 unreachable
+    # (degraded, never fatal — scale-multi-instance Phase 5 / R8).
+    s3: str | None = None
+
+
+class ReadyResponse(BaseModel):
+    """Queue-consumption readiness probe (scale-multi-instance Phase 5)."""
+
+    status: str
+    pending: int
+    running: int
+    # Seconds since the oldest still-running task last heartbeat; None if no
+    # running tasks. High values hint at stalled workers.
+    heartbeat_lag_seconds: float | None = None

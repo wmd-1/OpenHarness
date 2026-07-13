@@ -8,13 +8,13 @@ from typing import AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.deps import get_db, get_storage
+from app.deps import get_db, get_storage, storage_for_kind
 from app.models import TaskStatus, VideoTask
 from app.schemas import (
     TaskLinks,
@@ -25,7 +25,7 @@ from app.schemas import (
 )
 from app.storage.base import VideoStorage
 from app.workers.celery_app import celery_app
-from app.workers.tasks import generate_video_task
+from app.workers.scheduler import get_scheduler
 
 router = APIRouter(prefix="/v1/videos", tags=["videos"])
 
@@ -66,6 +66,22 @@ def _to_response(task: VideoTask) -> VideoTaskResponse:
     )
 
 
+def _set_abort_flag(task_id: uuid.UUID) -> None:
+    """Best-effort cross-replica abort flag (mirrors the RUNNING path).
+
+    The worker polls this via ``is_aborted`` and tears down the ``oh`` process
+    group (scale-multi-instance R9).
+    """
+    try:
+        import redis as redis_lib
+
+        rr = redis_lib.from_url(settings.broker_url)
+        rr.set(f"oh:abort:{task_id}", "1", ex=3600)
+        rr.close()
+    except Exception:
+        pass
+
+
 async def _get_task_or_404(task_id: uuid.UUID, db: AsyncSession) -> VideoTask:
     task = await db.get(VideoTask, task_id)
     if task is None:
@@ -101,6 +117,7 @@ async def create_video(
         timeout_seconds=body.timeout_seconds,
         extra_oh_args=json.dumps(body.extra_oh_args) if body.extra_oh_args else None,
         idempotency_key=body.idempotency_key,
+        storage_kind=settings.storage_kind,
     )
     try:
         db.add(task)
@@ -127,8 +144,9 @@ async def create_video(
                 )
         raise
 
-    # Enqueue Celery task
-    generate_video_task.delay(str(task.id))
+    # Enqueue render via the configured scheduler (Phase 6). Priority drives
+    # the queue tier (high/normal/low) for Phase 7 priority consumption.
+    get_scheduler().enqueue(str(task.id), priority=task.priority)
 
     return VideoCreateResponse(
         task_id=task.id,
@@ -169,10 +187,17 @@ async def _iterfile(fileobj, start: int = 0, chunk: int = 1024 * 1024) -> AsyncG
 async def download_video(
     task_id: uuid.UUID,
     request: Request,
+    mode: str = Query(default="redirect"),
     db: AsyncSession = Depends(get_db),
-    storage: VideoStorage = Depends(get_storage),
 ):
-    """Stream-download the generated video file (supports HTTP Range)."""
+    """Download the generated video file (supports HTTP Range).
+
+    Default ``mode=redirect`` returns a 302 to a presigned URL when the task's
+    artifact lives in S3 (``storage_kind='s3'``) and a URL can be built
+    (MODIFY R3). Otherwise — local/NFS backend, ``?mode=stream``, or when no
+    presigned URL is available — it streams the bytes directly (backward
+    compatible with the single-instance behavior).
+    """
     task = await _get_task_or_404(task_id, db)
     if task.status != TaskStatus.SUCCEEDED:
         raise HTTPException(
@@ -181,6 +206,15 @@ async def download_video(
         )
     if not task.output_path:
         raise HTTPException(status_code=404, detail="Output file not found")
+
+    storage = storage_for_kind(task.storage_kind)
+
+    # Default redirect mode: hand S3 artifacts off to a presigned URL so the
+    # API box never proxies the object body (scale-multi-instance R4).
+    if mode != "stream" and task.storage_kind == "s3":
+        presigned = storage.presigned_url(task.output_path)
+        if presigned is not None:
+            return RedirectResponse(url=presigned, status_code=302)
 
     try:
         fileobj, size = storage.open(task.output_path)
@@ -293,7 +327,10 @@ async def delete_video(
         # Revoke Celery task if it hasn't started
         if task.celery_task_id:
             celery_app.control.revoke(task.celery_task_id, terminate=True, signal="SIGTERM")
+        # Durable cancellation flag + cross-replica abort key (scale-multi-instance R9).
         task.status = TaskStatus.CANCELED
+        task.cancellation_requested = True
+        _set_abort_flag(task.id)
         await db.commit()
         return VideoDeleteResponse(
             task_id=task.id,
@@ -305,18 +342,14 @@ async def delete_video(
         # Signal the worker to kill the oh process group. The worker is the
         # authoritative party (revoke may not reach a different replica's
         # child), so we set a cross-replica Redis flag it polls via is_aborted.
-        try:
-            import redis as redis_lib
-
-            rr = redis_lib.from_url(settings.broker_url)
-            rr.set(f"oh:abort:{task.id}", "1", ex=3600)
-            rr.close()
-        except Exception:
-            pass
+        _set_abort_flag(task.id)
         # Best-effort nudge to the Celery worker as well.
         if task.celery_task_id:
             celery_app.control.revoke(task.celery_task_id, terminate=True, signal="SIGTERM")
+        # Durable cancellation flag (scale-multi-instance R9): survives Redis
+        # blips and is readable by any replica that later owns the task.
         task.status = TaskStatus.CANCELED
+        task.cancellation_requested = True
         await db.commit()
         return VideoDeleteResponse(
             task_id=task.id,

@@ -1,0 +1,46 @@
+===== scale-multi-instance e2e  2026-07-13T12:05:31Z =====
+--- building oh-e2e:latest ---
+PASS | derived image built
+--- pulling infra images ---
+--- bringing up stack (api x2 / worker x2) ---
+PASS | api-1 responds /healthz
+PASS | api-2 responds /healthz
+--- TEST A: endpoints across replicas (R11/R12) ---
+PASS | api-1 /healthz has s3 field
+PASS | api-1 /readyz 200
+PASS | api-1 /metrics exposes oh_render_inflight
+PASS | api-2 /healthz has s3 field
+PASS | api-2 /readyz 200
+PASS | api-2 /metrics exposes oh_render_inflight
+--- TEST B: render -> S3 302 download (R3/R10) ---
+  submitted task cd09c951-ec04-4ea4-9a86-158c967f8abd
+PASS | task succeeded (R7 claim + render)
+PASS | GET /file -> 302 presigned minio URL (R3/R10)
+--- TEST C: worker crash reclaim (R7/R8/R9) ---
+  submitted reclaim tasks: f697c0d4-6200-47da-aec6-d7aae719b835 9be82c19-f84e-4ab9-917b-044f03dce6fb b71243e1-572b-4d43-830b-24c41b689dc9 5e737050-ee03-4952-914d-68de8c2daa0f
+  running before kill: runningrunningrunningrunning
+  killed e2ev8-worker-1 (crash simulation)
+  status trail: running running running running running running running running running running running running running running running running running running running running running running running succeeded running running running running running running running running running running running running running running running running running running running running succeeded succeeded succeeded
+  proof f697c0d4-6200-47da-aec6-d7aae719b835: orig_owner=worker-6bb3529987b8 final=worker-6bb3529987b8 attempt=0
+  proof 9be82c19-f84e-4ab9-917b-044f03dce6fb: orig_owner=worker-f727e179021b final=worker-22339942342c attempt=1
+  proof b71243e1-572b-4d43-830b-24c41b689dc9: orig_owner=worker-ef986ff275fb final=worker-4e2c3bb3e37f attempt=1
+  proof 5e737050-ee03-4952-914d-68de8c2daa0f: orig_owner=worker-2e533bce9ea8 final=worker-2e533bce9ea8 attempt=0
+PASS | reclaim+takeover proved via DB (owner change + attempt bump) (R7/R8/R9)
+PASS | all crashed-worker tasks eventually succeeded on surviving replica (R7)
+--- TEST D: cross-replica cancel (R9) ---
+  task 4658d971-183a-4dce-994f-114a8ea315ed running
+PASS | api-2 DELETE returned canceled
+PASS | task canceled after cross-replica delete (R9)
+--- TEST E: MinIO restart degraded health (R11) ---
+  stopped minio
+PASS | healthz degraded (s3=false) but HTTP 200 (non-fatal) (R11)
+  restarted minio
+PASS | healthz s3 recovered true after minio restart (R11)
+--- TEST F: per-worker concurrency cap (R13) ---
+  recreating worker with concurrency=1 / max_concurrent_renders=1
+  worker containers Up after settle: 1
+  submitted cap tasks: 0057d894-8090-4e91-bed3-fbf46f408d2c 38fe38b9-7cbf-4a1d-87fd-26fe79a56166 8f92dfe8-43ac-45a7-a774-0a045cda7f14
+PASS | concurrent stub renders never exceeded 1 (max_observed=1) (R13)
+PASS | all capped tasks succeeded (R13)
+===== SUMMARY: pass=19 fail=0 =====
+--- tearing down stack ---

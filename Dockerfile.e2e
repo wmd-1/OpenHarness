@@ -1,0 +1,40 @@
+# e2e derived image for the scale-multi-instance acceptance suite.
+#
+# Base: the prebuilt OpenHarness image that already ships the `oh` CLI,
+# headless chrome, Node, OpenHarness skills and the (older) service code.
+# We only:
+#   1. install the multi-instance dependencies into the existing venv,
+#   2. overlay the multi-instance `service/` (the code under test),
+#   3. add the OH_ROLE entrypoint + a faithful `oh` stub for offline rendering.
+FROM openharness_hyperframes_qwen-tts_pptx:v0.1.9_v0.7.20_v1.3_v2.0
+
+USER root
+
+# --- Multi-instance runtime deps (into the image's existing venv) ----------
+RUN /root/.openharness-venv/bin/pip install --no-cache-dir \
+    "boto3==1.*" "botocore==1.*" \
+    "prometheus-client==0.21.*" \
+    "structlog==24.*" \
+    "psutil==6.*" \
+    "aiosqlite" \
+    "opentelemetry-api==1.27.*" \
+    "opentelemetry-sdk==1.27.*" \
+    "opentelemetry-exporter-otlp==1.27.*" \
+    "opentelemetry-instrumentation-fastapi==0.48b0" \
+    "opentelemetry-instrumentation-celery==0.48b0" \
+    "opentelemetry-instrumentation-sqlalchemy==0.48b0" \
+    "opentelemetry-instrumentation-redis==0.48b0"
+
+# --- Overlay the multi-instance service code (the code under test) ---------
+COPY service /opt/oh-service
+
+# --- Faithful oh stub (no API key needed for e2e) ---------------------------
+COPY e2e/oh_stub.sh /usr/local/bin/oh-stub
+RUN chmod +x /usr/local/bin/oh-stub
+
+# --- OH_ROLE entrypoint (api / worker / beat / migrate / serve) -------------
+RUN printf '#!/bin/bash\ncp -a /opt/oh-skills-builtin/. /root/.openharness/skills/ 2>/dev/null || true\ncd /opt/oh-service || exit 1\ncase "${OH_ROLE:-serve}" in\n  api) exec uvicorn app.main:app --host 0.0.0.0 --port "${OH_API_PORT:-8000}" --workers "${OH_API_WORKERS:-1}";;\n  worker) exec celery -A app.workers.celery_app.celery_app worker -l info -c "${OH_CELERY_CONCURRENCY:-4}" -Q "${OH_WORKER_QUEUES:-high,normal,low}";;\n  beat) exec celery -A app.workers.celery_app.celery_app beat -l info;;\n  migrate) exec alembic upgrade head;;\n  serve|*) exec /usr/local/bin/oh-serve;;\nesac\n' > /usr/local/bin/oh-role \
+    && chmod +x /usr/local/bin/oh-role
+
+ENTRYPOINT ["/usr/local/bin/oh-role"]
+WORKDIR /opt/oh-service

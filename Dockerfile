@@ -83,7 +83,15 @@ RUN python -m venv /root/.openharness-venv \
         sqlalchemy[asyncio]==2.0.* asyncpg==0.30.* psycopg[binary]==3.2.* \
         alembic==1.14.* \
         celery[redis]==5.4.* redis==5.2.* \
-        pydantic-settings==2.6.* sse-starlette==2.1.* python-multipart
+        pydantic-settings==2.6.* sse-starlette==2.1.* python-multipart \
+        boto3==1.* botocore==1.* \
+        prometheus-client==0.20.* \
+        structlog==24.* psutil==6.* \
+        opentelemetry-api==1.27.* opentelemetry-sdk==1.27.* opentelemetry-exporter-otlp==1.27.* \
+        opentelemetry-instrumentation-fastapi==0.48b0 \
+        opentelemetry-instrumentation-celery==0.48b0 \
+        opentelemetry-instrumentation-sqlalchemy==0.48b0 \
+        opentelemetry-instrumentation-redis==0.48b0
 # ElevenLabs 云端 TTS（可选，需 API Key，按需取消注释）：
 # RUN uv pip install --python /root/.openharness-venv/bin/python elevenlabs
 
@@ -108,6 +116,12 @@ RUN printf '#!/bin/bash\ncp -a /opt/oh-skills-builtin/. /root/.openharness/skill
     && printf '#!/bin/bash\ncp -a /opt/oh-skills-builtin/. /root/.openharness/skills/ 2>/dev/null || true\nexec /root/.openharness-venv/bin/openharness --permission-mode full_auto "$@"\n' > /root/.local/bin/openharness \
     && printf '#!/bin/bash\nexec /usr/bin/supervisord -c /etc/supervisor/conf.d/oh-service.conf\n' > /usr/local/bin/oh-serve \
     && chmod +x /root/.local/bin/oh /root/.local/bin/ohmo /root/.local/bin/openharness /usr/local/bin/oh-serve
+
+# ---- [Phase 4] OH_ROLE 入口：单镜像多角色（api/worker/beat），默认回退 oh-serve ----
+# docker-compose.prod.yml 通过 entrypoint: ["oh-role"] + OH_ROLE 切换角色，
+# 任意水平扩展（--scale worker=N --scale api=M）。保留 oh-serve 单容器 supervisord 作 fallback。
+RUN printf '#!/bin/bash\n# Sync built-in skills into the volume mount (mirrors the oh wrappers).\ncp -a /opt/oh-skills-builtin/. /root/.openharness/skills/ 2>/dev/null || true\ncd /opt/oh-service || exit 1\ncase "${OH_ROLE:-serve}" in\n  api)\n    exec uvicorn app.main:app --host 0.0.0.0 --port "${OH_API_PORT:-8000}" --workers "${OH_API_WORKERS:-2}"\n    ;;\n  worker)\n    exec celery -A app.workers.celery_app.celery_app worker -l info -Q "${OH_WORKER_QUEUES:-high,normal,low}" -c "${OH_CELERY_CONCURRENCY:-4}"\n    ;;\n  beat)\n    exec celery -A app.workers.celery_app.celery_app beat -l info\n    ;;\n  serve|*)\n    exec /usr/bin/supervisord -c /etc/supervisor/conf.d/oh-service.conf\n    ;;\nesac\n' > /usr/local/bin/oh-role \
+    && chmod +x /usr/local/bin/oh-role
 EXPOSE 8000
 
 # ---- [模块 D] 预下载 Kokoro TTS 模型（离线必需，~338 MB）----

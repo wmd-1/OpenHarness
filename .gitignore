@@ -48,6 +48,11 @@ htmlcov/
 frontend/terminal/node_modules/
 
 # User data (never commit API keys or session data)
+.env.*
+!.env.example
+
+# e2e runtime logs (keep report files)
+e2e/e2e_run.log
 .openharness/
 react_tui_smoke.txt
 
