@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
@@ -42,6 +43,11 @@ async def _s3_ok() -> bool | None:
     """Return None when not on S3; True/False when an S3 probe succeeds/fails.
 
     A failing probe degrades ``/healthz`` but never makes it fatal (R8).
+
+    The probe is a blocking boto3 call, so it is run off the event loop with a
+    hard 2s cap. This guarantees ``/healthz`` degrades within ~2s (instead of
+    hanging for the full client timeout) even when the S3 endpoint is
+    unreachable / blackholed (R8/R11).
     """
     if settings.storage_kind != "s3":
         return None
@@ -49,10 +55,17 @@ async def _s3_ok() -> bool | None:
         from app.deps import storage_for_kind
 
         storage = storage_for_kind("s3")
-        # A head-style probe: existence check on a sentinel key exercises the
-        # S3 client without requiring the key to actually exist.
-        storage.exists("__health_probe__")
-        return True
+
+        def _probe() -> bool:
+            try:
+                # A head-style probe: existence check on a sentinel key exercises
+                # the S3 client without requiring the key to actually exist.
+                storage.exists("__health_probe__")
+                return True
+            except Exception:
+                return False
+
+        return await asyncio.wait_for(asyncio.to_thread(_probe), timeout=2.0)
     except Exception:
         return False
 

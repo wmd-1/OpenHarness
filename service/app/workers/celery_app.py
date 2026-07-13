@@ -49,6 +49,11 @@ celery_app.conf.beat_schedule = {
 # route is the safety-net for any enqueue that omits a queue.
 celery_app.conf.task_routes = {
     "generate_video": {"queue": "normal"},
+    # Periodic (beat) tasks must land on a queue the workers actually consume,
+    # otherwise they pile up on the default "celery" queue and never run — this
+    # silently disabled auto reclaim (R7-R9) and expired-task cleanup.
+    "recover_lost_tasks": {"queue": "normal"},
+    "cleanup_expired_tasks": {"queue": "normal"},
 }
 
 celery_app.autodiscover_tasks(["app.workers.tasks"])

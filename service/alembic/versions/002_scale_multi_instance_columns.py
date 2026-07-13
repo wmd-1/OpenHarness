@@ -49,9 +49,12 @@ def upgrade() -> None:
     )
     # RETRYING is a new task status used by the reclaim flow (Phase 2 / R7).
     # On sqlite it is a plain Python-side value (no native enum); on Postgres
-    # the native enum must be extended. PG 12+ permits ADD VALUE in a txn.
+    # the native enum must be extended. The Python enum member NAME is
+    # "RETRYING" (uppercase) and SQLAlchemy persists the member NAME, so the
+    # native enum label must match exactly (uppercase) to stay consistent with
+    # the labels created in 001 (QUEUED/RUNNING/SUCCEEDED/FAILED/CANCELED).
     if op.get_context().dialect.name == "postgresql":
-        op.execute("ALTER TYPE taskstatus ADD VALUE 'retrying'")
+        op.execute("ALTER TYPE taskstatus ADD VALUE 'RETRYING'")
 
 
 def downgrade() -> None:

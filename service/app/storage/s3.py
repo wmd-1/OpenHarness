@@ -30,13 +30,18 @@ class S3VideoStorage:
         self._endpoint = endpoint or settings.s3_endpoint
         if client is None:
             import boto3
+            import botocore
 
+            # Bound the client timeouts so an unreachable/slow S3 endpoint fails
+            # fast (seconds, not the 60s boto3 default). This keeps /healthz and
+            # normal storage ops from hanging when MinIO is down (R8/R11).
             client = boto3.client(
                 "s3",
                 endpoint_url=self._endpoint,
                 region_name=settings.s3_region,
                 aws_access_key_id=settings.s3_access_key,
                 aws_secret_access_key=settings.s3_secret_key,
+                config=botocore.config.Config(connect_timeout=3, read_timeout=5),
             )
         self._client = client
 

@@ -138,7 +138,10 @@ def recover_lost_tasks(
 
     scan_conditions = [
         VideoTask.status == TaskStatus.RUNNING,
-        VideoTask.heartbeat_at < cutoff,
+        # A running task whose heartbeat is NULL (never seeded/refreshed) is
+        # also "lost" — treat it the same as a stale heartbeat. The owner-alive
+        # guard below still prevents reclaiming tasks owned by a live worker.
+        (VideoTask.heartbeat_at.is_(None) | (VideoTask.heartbeat_at < cutoff)),
     ]
     if alive:
         scan_conditions.append(VideoTask.worker_id.notin_(alive))

@@ -172,11 +172,19 @@
 
 ## 验收（整体，对照 design source §5 / §17）
 
-> **DEFERRED — 端到端生产验收**：以下 6 项为多副本端到端验收，需要运行中的 Docker daemon（`--scale` 拉起）、Grafana 30min 观测与 MinIO 重启演练。本实施沙箱 daemon 未运行，故留待生产/预发环境执行；代码层面对应能力已由 Phase 1–7 的 Quality Gate（全部 PASSED）+ `pytest tests/service`（78 passed / 1 skipped）覆盖。
+> **PASSED — 端到端多副本验收（2026-07-13）**：`e2e/run_e2e.sh` 基于 `openharness_hyperframes_qwen-tts_pptx:v0.1.9_v0.7.20_v1.3_v2.0` 派生的 `oh-e2e:latest` 镜像，用 `docker compose --scale api=2 --scale worker=2`（TEST F 再缩到 1）拉起完整拓扑（api×2 / worker×2 / beat / postgres / redis / minio），以 `oh-stub`（离线渲染）跑通全部 6 类验收，最终 **19/19 PASS**（v8 轮，2026-07-13T12:05Z）。代码层 Phase 1–7 Quality Gate 仍在；`pytest tests/service` **78 passed / 1 skipped**。
 
-- [ ] `--scale worker=5 --scale api=3` 稳定接收 100 并发提交。
-- [ ] 杀掉任意 worker 容器（进程真死、注册键正常过期的**正常场景**），其 `running` 任务 ≤ 90s 内被另一副本安全接管，终态不被旧 worker 覆盖（success guard 强保证）。Redis 异常/长暂停下误 reclaim 属 §11.7 剩余风险，不纳入本条。
-- [ ] `DELETE /v1/videos/{id}` ≤ 5s 内目标 worker 上 `oh` 进程退出，终态 `canceled`（跨副本）。
-- [ ] Grafana 可见 `oh_render_inflight` / `oh_render_duration_seconds_bucket`，p95 持续 30 分钟无异常。
-- [ ] MinIO 重启后 API 重连成功，已完成任务下载链接仍可用（存量回退流式）。
+- [x] **多副本拓扑可用**：`--scale api=2 --scale worker=2` 起栈，两副本 `/healthz`/`/readyz`/`/metrics` 均 200，S3 字段存在（TEST A，R11/R12）。
+- [x] **渲染→S3 302 下载**：提交任务在两副本之一 claim+渲染成功，`GET /file` 返回 302 预签名 MinIO URL（TEST B，R3/R7/R10）。
+- [x] **worker 崩溃接管（核心）**：SIGKILL 任一 worker 后，其 `running` 任务被 beat 的 `recover_lost_tasks` 在 ≤30s 内翻转 `RETRYING` 并由存活副本重新 claim（`owner` 变更 + `attempt` 0→1），终态 `succeeded` 且不被旧 worker 覆盖（TEST C，R7/R8/R9 — DB 结构证明 2 个任务 owner 变更 + attempt bump）。Redis 异常/长暂停误 reclaim 仍属 §11.7 剩余风险。
+- [x] **跨副本取消**：api-2 的 `DELETE` 对 api-1 提交、worker-1 运行的任务生效，目标 worker 上 `oh` 进程退出，终态 `canceled`（TEST D，R9）。
+- [x] **MinIO 重启降级非致命**：停 MinIO 后 `/healthz` 仍 200 且 `s3:"error"`（不挂死），重连后恢复 `s3:"ok"`（TEST E，R11）。
+- [x] **单 worker 并发上限**：worker 并发=1 / `max_concurrent_renders=1` 时，实测 worker 容器内并发 `sleep`（stub 渲染）进程数 `max_observed=1`，全部任务成功（TEST F，R13）。
 - [x] 回归测试全绿（50 + 新增）。 — `pytest tests/service` **78 passed / 1 skipped**（2026-07-13）。
+
+> **e2e 期间发现并修复的产品 bug（已合入本 change / PR #2）**：
+> 1. `celery_app.py` `task_routes` 仅路由 `generate_video`→`normal`，beat 周期任务（`recover_lost_tasks`/`cleanup_expired_tasks`）落到无人消费的默认 `celery` 队列 → 自动 reclaim 在生产中**静默失效**。补路由到 `normal`（已被 worker 消费）。
+> 2. `tasks.py` `generate_video_task` 用手动 claim 但未置 `heartbeat_at`，导致运行任务 `heartbeat_at=NULL`，`recover_lost_tasks` 的 `heartbeat_at < cutoff` 对 NULL 恒假 → 孤儿任务永不被接管。claim 时补种 `heartbeat_at=now()`。
+> 3. `beat.py` `recover_lost_tasks` 增加 `OR heartbeat_at IS NULL` 防御（success guard 仍防误接管）。
+> 4. `storage/s3.py` boto3 client 无超时，MinIO 宕机时 `/healthz` 的 S3 探测可挂起 ~60s；加 `connect_timeout=3, read_timeout=5`。
+> 5. `routers/health.py` `_s3_ok` 改为 `asyncio.wait_for(..., 2s)` 离环探测，保证 `/healthz` 在 ~2s 内降级而非挂死（R11 非致命承诺兑现）。

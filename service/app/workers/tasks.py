@@ -260,6 +260,12 @@ def generate_video_task(self, task_id: str) -> None:
         task.worker_id = wid
         task.status = TaskStatus.RUNNING
         task.started_at = datetime.now(timezone.utc)
+        # Seed heartbeat_at at claim time (scale-multi-instance R7/R8). The
+        # liveness loop refreshes it while the worker is alive; if the worker
+        # dies, this timestamp goes stale and recover_lost_tasks reclaims the
+        # task. Without this, heartbeat_at stays NULL and the reclaim scan's
+        # `heartbeat_at < cutoff` condition can never match -> orphaned tasks.
+        task.heartbeat_at = datetime.now(timezone.utc)
         task.celery_task_id = self.request.id
         db.commit()
 
