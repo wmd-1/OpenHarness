@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 import redis as _redis
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, func, update as sa_update
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -17,7 +18,16 @@ from app.models import TaskStatus, VideoTask
 from app.storage.local import LocalVideoStorage
 from app.workers.celery_app import celery_app
 from app.workers.parser import OutputNotFoundError, locate_output_file, probe_mp4
+from app.workers.identity import get_worker_id
 from app.workers.runner import run_oh
+from app.observability.metrics import render_inflight
+
+# --- Per-worker render concurrency cap (scale-multi-instance Phase 7) -------
+# Caps concurrently running ``oh`` render subprocesses in THIS worker process
+# so horizontal scale-out does not OOM Chrome/ffmpeg. The task body acquires
+# this around ``run_oh``.
+render_semaphore = threading.BoundedSemaphore(settings.max_concurrent_renders)
+MAX_CONCURRENT_RENDERS = settings.max_concurrent_renders
 
 logger = logging.getLogger(__name__)
 
@@ -70,51 +80,117 @@ def _append_log(task_id: str, line: str) -> None:
         logger.warning("Failed to push log line to Redis for task %s", task_id)
 
 
+def claim(task_id: uuid.UUID, worker_id: str) -> bool:
+    """Atomically claim a queued/retrying task for ``worker_id``.
+
+    A single conditional UPDATE (row lock) serializes concurrent workers so
+    exactly one becomes the owner. Returns True if this worker won the claim.
+    See OpenSpec scale-multi-instance R7.
+    """
+    task_id = uuid.UUID(str(task_id))
+    with _sync_session() as db:
+        result = db.execute(
+            sa_update(VideoTask)
+            .where(
+                VideoTask.id == task_id,
+                VideoTask.status.in_([TaskStatus.QUEUED, TaskStatus.RETRYING]),
+            )
+            .values(
+                status=TaskStatus.RUNNING,
+                started_at=func.now(),
+                worker_id=worker_id,
+                attempt=VideoTask.attempt + 1,
+                heartbeat_at=func.now(),
+            )
+        )
+        affected = result.rowcount
+        db.commit()
+        return affected == 1
+
+
 def _mark_succeeded(
     task_id: str,
     storage_key: str,
     meta,  # VideoMeta
     result,  # RunResult
-) -> None:
+    worker_id: str | None = None,
+) -> bool:
+    """Persist a successful render.
+
+    Success guard (scale-multi-instance R9): the terminal state is only written
+    when the row is still RUNNING *for this worker*. A stale/previous owner
+    (e.g. after a reclaim) matches 0 rows, so the existing terminal state is
+    left untouched. Returns True if the write happened.
+    """
+    conditions = [VideoTask.id == uuid.UUID(str(task_id)), VideoTask.status == TaskStatus.RUNNING]
+    if worker_id is not None:
+        conditions.append(VideoTask.worker_id == worker_id)
     with _sync_session() as db:
-        task = db.get(VideoTask, task_id)
-        if task is None:
-            return
-        task.status = TaskStatus.SUCCEEDED
-        task.output_path = storage_key
-        task.file_size_bytes = meta.file_size_bytes
-        task.duration_seconds = meta.duration_seconds
-        task.resolution = meta.resolution
-        task.fps = meta.fps
-        task.exit_code = result.exit_code
-        task.finished_at = datetime.now(timezone.utc)
+        exec_result = db.execute(
+            sa_update(VideoTask)
+            .where(*conditions)
+            .values(
+                status=TaskStatus.SUCCEEDED,
+                finished_at=func.now(),
+                output_path=storage_key,
+                file_size_bytes=meta.file_size_bytes,
+                duration_seconds=meta.duration_seconds,
+                resolution=meta.resolution,
+                fps=meta.fps,
+                exit_code=result.exit_code,
+            )
+        )
         db.commit()
+        return exec_result.rowcount == 1
 
 
-def _mark_failed(task_id: str, exc: Exception, exit_code: int | None = None) -> None:
+def _mark_failed(task_id: str, exc: Exception, exit_code: int | None = None, worker_id: str | None = None) -> bool:
+    """Persist a failed render.
+
+    Ownership guard (scale-multi-instance R9): only writes when the row is
+    still RUNNING for this worker, so a reclaimed/stale owner cannot flip a
+    task another replica has taken over into FAILED.
+    """
+    conditions = [VideoTask.id == uuid.UUID(str(task_id)), VideoTask.status == TaskStatus.RUNNING]
+    if worker_id is not None:
+        conditions.append(VideoTask.worker_id == worker_id)
     with _sync_session() as db:
-        task = db.get(VideoTask, task_id)
-        if task is None:
-            return
-        task.status = TaskStatus.FAILED
-        task.error_message = str(exc)[:4000]
-        if exit_code is not None:
-            task.exit_code = exit_code
-        task.finished_at = datetime.now(timezone.utc)
+        result = db.execute(
+            sa_update(VideoTask)
+            .where(*conditions)
+            .values(
+                status=TaskStatus.FAILED,
+                error_message=str(exc)[:4000],
+                exit_code=exit_code,
+                finished_at=func.now(),
+            )
+        )
         db.commit()
+        return result.rowcount == 1
 
 
-def _mark_canceled(task_id: str, exc: Exception | None = None) -> None:
-    """Mark a task CANCELED (user-requested cancellation)."""
+def _mark_canceled(task_id: str, exc: Exception | None = None, worker_id: str | None = None) -> bool:
+    """Mark a task CANCELED (user-requested cancellation).
+
+    Ownership guard (scale-multi-instance R9): only writes when the row is
+    still RUNNING for this worker, so a reclaimed/stale owner cannot clobber a
+    task another replica has since taken over.
+    """
+    conditions = [VideoTask.id == uuid.UUID(str(task_id)), VideoTask.status == TaskStatus.RUNNING]
+    if worker_id is not None:
+        conditions.append(VideoTask.worker_id == worker_id)
     with _sync_session() as db:
-        task = db.get(VideoTask, task_id)
-        if task is None:
-            return
-        task.status = TaskStatus.CANCELED
-        task.finished_at = datetime.now(timezone.utc)
-        if exc is not None:
-            task.error_message = str(exc)[:4000]
+        result = db.execute(
+            sa_update(VideoTask)
+            .where(*conditions)
+            .values(
+                status=TaskStatus.CANCELED,
+                finished_at=func.now(),
+                error_message=str(exc)[:4000] if exc else None,
+            )
+        )
         db.commit()
+        return result.rowcount == 1
 
 
 def _abort_requested(task_id: str) -> bool:
@@ -177,6 +253,11 @@ def generate_video_task(self, task_id: str) -> None:
         if task.status == TaskStatus.CANCELED:
             return
 
+        # Claim ownership of this task for the lifetime of this worker process
+        # (scale-multi-instance R7): the worker_id lets the heartbeat/reclaim
+        # flow tell which replica owns a running task.
+        wid = get_worker_id()
+        task.worker_id = wid
         task.status = TaskStatus.RUNNING
         task.started_at = datetime.now(timezone.utc)
         task.celery_task_id = self.request.id
@@ -196,21 +277,26 @@ def generate_video_task(self, task_id: str) -> None:
             db.commit()
 
     try:
-        result = run_oh(
-            prompt=prompt,
-            cwd=workspace,
-            timeout=timeout,
-            on_log_line=lambda line: _append_log(task_id, line),
-            extra_args=extra_oh_args,
-            is_aborted=lambda: _abort_requested(task_id),
-            oh_bin=settings.oh_bin,
-            headless_shell_path=settings.headless_shell_path,
-        )
+        # Track an in-flight render so Grafana can see per-replica concurrency
+        # (Phase 5 / R8). Phase 7 caps this with a global semaphore so the
+        # worker never spawns more than MAX_CONCURRENT_RENDERS oh processes.
+        with render_inflight():
+            with render_semaphore:
+                result = run_oh(
+                    prompt=prompt,
+                    cwd=workspace,
+                    timeout=timeout,
+                    on_log_line=lambda line: _append_log(task_id, line),
+                    extra_args=extra_oh_args,
+                    is_aborted=lambda: _abort_requested(task_id),
+                    oh_bin=settings.oh_bin,
+                    headless_shell_path=settings.headless_shell_path,
+                )
 
         # Guard: if the user canceled while running, do NOT overwrite the
         # status back to SUCCEEDED/FAILED. The worker is authoritative here.
         if _abort_requested(task_id):
-            _mark_canceled(task_id, RuntimeError("canceled by user"))
+            _mark_canceled(task_id, RuntimeError("canceled by user"), worker_id=wid)
             return
 
         _update_log_tail(task_id)
@@ -220,13 +306,14 @@ def generate_video_task(self, task_id: str) -> None:
                 task_id,
                 RuntimeError(f"oh exited with code {result.exit_code}"),
                 exit_code=result.exit_code,
+                worker_id=wid,
             )
             return
 
         mp4 = locate_output_file(result.stdout, workspace)
         meta = probe_mp4(mp4)
         final_key = storage.save(task_id, mp4)
-        _mark_succeeded(task_id, final_key, meta, result)
+        _mark_succeeded(task_id, final_key, meta, result, worker_id=wid)
 
         # Publish done marker into the log stream (consumed by SSE).
         try:
@@ -238,14 +325,14 @@ def generate_video_task(self, task_id: str) -> None:
         # Deterministic failure — record and stop (do NOT re-raise, so the
         # message is acked rather than infinitely redelivered).
         _update_log_tail(task_id)
-        _mark_failed(task_id, exc)
+        _mark_failed(task_id, exc, worker_id=wid)
     except TransientError:
         # Transient infrastructure errors still trigger the autoretry_for retry.
         raise
     except Exception as exc:
         # Deterministic failure — record and stop (no re-raise).
         _update_log_tail(task_id)
-        _mark_failed(task_id, exc)
+        _mark_failed(task_id, exc, worker_id=wid)
         return
 
 

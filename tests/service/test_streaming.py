@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.deps import get_db, get_storage
 from app.main import app
 from app.models import Base, TaskStatus, VideoTask
+from app.routers import videos as videos_router
 from app.storage.local import LocalVideoStorage
 
 
@@ -42,7 +43,7 @@ async def db_session():
 
 
 @pytest.fixture
-async def stream_env(db_session):
+async def stream_env(db_session, monkeypatch):
     """Client wired to a temp storage pre-populated with a 1024-byte file."""
     tmp = tempfile.mkdtemp()
     storage = LocalVideoStorage(root=Path(tmp))
@@ -55,6 +56,9 @@ async def stream_env(db_session):
 
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_storage] = lambda: storage
+    # Phase 3: download_video resolves the backend via storage_for_kind(task.storage_kind)
+    # rather than the injected get_storage, so override that too (scale-multi-instance R4).
+    monkeypatch.setattr(videos_router, "storage_for_kind", lambda kind: storage)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac, key, payload

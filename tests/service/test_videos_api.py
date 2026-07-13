@@ -69,10 +69,10 @@ async def client(db_session):
 class TestCreateVideo:
     """POST /v1/videos"""
 
-    @patch("app.routers.videos.generate_video_task")
+    @patch("app.routers.videos.get_scheduler")
     async def test_create_video_success(self, mock_celery, client: AsyncClient):
         """Should create a task and enqueue it."""
-        mock_celery.delay = MagicMock()
+        mock_celery.return_value.enqueue = MagicMock()
         response = await client.post(
             "/v1/videos",
             json={"prompt": "Make a video"},
@@ -85,11 +85,14 @@ class TestCreateVideo:
         assert data["links"]["self"].startswith("/v1/videos/")
         assert data["links"]["file"].endswith("/file")
         assert data["links"]["events"].endswith("/events")
+        # Phase 6/7: enqueued through the scheduler with the task's priority.
+        mock_celery.return_value.enqueue.assert_called_once()
+        assert mock_celery.return_value.enqueue.call_args.kwargs.get("priority") == 5
 
-    @patch("app.routers.videos.generate_video_task")
+    @patch("app.routers.videos.get_scheduler")
     async def test_create_video_with_idempotency(self, mock_celery, client: AsyncClient, db_session):
         """Should return existing task for same idempotency key."""
-        mock_celery.delay = MagicMock()
+        mock_celery.return_value.enqueue = MagicMock()
 
         # Create first task
         r1 = await client.post(
@@ -123,10 +126,10 @@ class TestCreateVideo:
         )
         assert response.status_code == 422
 
-    @patch("app.routers.videos.generate_video_task")
+    @patch("app.routers.videos.get_scheduler")
     async def test_create_video_rejects_forbidden_oh_arg(self, mock_celery, client: AsyncClient):
         """Should reject disallowed extra_oh_args with 422 at the API edge."""
-        mock_celery.delay = MagicMock()
+        mock_celery.return_value.enqueue = MagicMock()
         response = await client.post(
             "/v1/videos",
             json={
@@ -140,10 +143,10 @@ class TestCreateVideo:
 class TestGetVideo:
     """GET /v1/videos/{task_id}"""
 
-    @patch("app.routers.videos.generate_video_task")
+    @patch("app.routers.videos.get_scheduler")
     async def test_get_existing_task(self, mock_celery, client: AsyncClient, db_session):
         """Should return task details."""
-        mock_celery.delay = MagicMock()
+        mock_celery.return_value.enqueue = MagicMock()
         create_resp = await client.post(
             "/v1/videos",
             json={"prompt": "Make a video"},

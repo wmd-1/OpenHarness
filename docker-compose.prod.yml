@@ -1,0 +1,174 @@
+# ============================================================================
+# OpenHarness — 多实例生产拓扑 (scale-multi-instance Phase 4)
+# ============================================================================
+# 单镜像多角色：每个副本通过 OH_ROLE (api|worker|beat) 选择入口，
+# 由 docker-compose.prod.yml 的 entrypoint: ["oh-role"] 切换。
+#
+# 水平扩展：
+#   docker compose -f docker-compose.prod.yml up -d --scale worker=N --scale api=M
+#
+# 说明：
+#   - 非 swarm，`deploy.replicas` 被忽略；用 --scale 生效（design source §7 I3）。
+#   - 保留 PYTHONPATH=/app/src:/opt/oh-service 与 working_dir: /opt/oh-service。
+#   - 单容器 fallback 仍可用：docker compose up（默认 oh-serve / supervisord）。
+# ============================================================================
+
+# 共享环境变量（所有角色共用；OH_ROLE 在各服务内单独覆盖）
+x-common-env: &common-env
+  PYTHONUNBUFFERED: "1"
+  OH_DB_URL: postgresql+asyncpg://oh:oh@postgres:5432/oh
+  OH_DB_SYNC_URL: postgresql+psycopg://oh:oh@postgres:5432/oh
+  OH_DB_MIGRATION_URL: postgresql+asyncpg://oh:oh@postgres:5432/oh
+  OH_BROKER_URL: redis://redis:6379/0
+  OH_VIDEO_DIR: /var/openharness/videos
+  OH_WORKSPACE_ROOT: /workspaces
+  # 对象存储（Phase 3）：默认 local（NFS/共享卷流式）；置 s3 走 presigned 302
+  OH_STORAGE_KIND: ${OH_STORAGE_KIND:-local}
+  OH_S3_ENDPOINT: ${OH_S3_ENDPOINT:-http://minio:9000}
+  OH_S3_BUCKET: ${OH_S3_BUCKET:-openharness}
+  OH_S3_REGION: ${OH_S3_REGION:-us-east-1}
+  OH_S3_ACCESS_KEY: ${OH_S3_ACCESS_KEY:-minioadmin}
+  OH_S3_SECRET_KEY: ${OH_S3_SECRET_KEY:-minioadmin}
+  OH_API_PORT: "8000"
+  OH_API_WORKERS: "2"
+  OH_CELERY_CONCURRENCY: "4"
+  PRODUCER_HEADLESS_SHELL_PATH: /opt/chrome-headless-shell-linux64/chrome-headless-shell
+  CHROME_HEADLESS_BIN: /opt/chrome-headless-shell-linux64/chrome-headless-shell
+  OPENHARNESS_PERMISSION_MODE: full_auto
+  HYPERFRAMES_AUTO_UPDATE: "false"
+  HYPERFRAMES_NO_AUTO_INSTALL: "1"
+  HYPERFRAMES_NO_UPDATE_CHECK: "1"
+  # API Keys — 通过 .env 文件传入
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  # QwenTTS (本地 TTS 服务) — 通过 .env 文件传入
+  QWENTTS_URL: ${QWENTTS_URL:-}
+  QWENTTS_MODE: ${QWENTTS_MODE:-speech}
+  QWENTTS_MODEL: ${QWENTTS_MODEL:-}
+  QWENTTS_VOICE: ${QWENTTS_VOICE:-}
+  QWENTTS_INSTRUCTIONS: ${QWENTTS_INSTRUCTIONS:-}
+
+# 共享服务定义（build/image/volumes/working_dir/depends_on），角色通过 OH_ROLE 区分
+x-service-base: &service-base
+  build:
+    context: .
+    dockerfile: Dockerfile
+    args:
+      PYTHON_VERSION: "3.11"
+  image: openharness-prod:${OH_VERSION_HYPERFRAMES_VERSION:-v0.1.9_v0.7.20_v1.3_v2.0}
+  working_dir: /opt/oh-service
+  volumes:
+    - oh-videos:/var/openharness/videos
+    - oh-workspaces:/workspaces
+    - openharness-config:/root/.openharness
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    minio:
+      condition: service_started
+
+services:
+  # ---- PostgreSQL ----
+  postgres:
+    image: postgres:16-alpine
+    container_name: oh-prod-postgres
+    environment:
+      POSTGRES_USER: oh
+      POSTGRES_PASSWORD: oh
+      POSTGRES_DB: oh
+    volumes:
+      - oh-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U oh"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ---- Redis ----
+  redis:
+    image: redis:7-alpine
+    container_name: oh-prod-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - oh-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ---- MinIO (S3-compatible, Phase 3 存储后端) ----
+  minio:
+    image: minio/minio:latest
+    container_name: oh-prod-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${OH_S3_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${OH_S3_SECRET_KEY:-minioadmin}
+    volumes:
+      - oh-minio:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+  # ---- 一次性：创建默认 bucket ----
+  createbuckets:
+    image: minio/mc:latest
+    container_name: oh-prod-createbuckets
+    depends_on:
+      minio:
+        condition: service_started
+    entrypoint:
+      - sh
+      - -c
+      - >
+        until (/usr/bin/mc alias set local http://minio:9000
+        ${OH_S3_ACCESS_KEY:-minioadmin} ${OH_S3_SECRET_KEY:-minioadmin}) do sleep 1; done;
+        /usr/bin/mc mb -p local/${OH_S3_BUCKET:-openharness};
+        exit 0
+
+  # ---- API 角色（uvicorn） ----
+  # 注意：可水平扩展，禁用固定 container_name（--scale api=M 需唯一名）
+  api:
+    <<: *service-base
+    entrypoint: ["oh-role"]
+    environment:
+      <<: *common-env
+      OH_ROLE: api
+    ports:
+      - "8000:8000"
+
+  # ---- Worker 角色（celery worker） ----
+  # 注意：可水平扩展，禁用固定 container_name（--scale worker=N 需唯一名）
+  worker:
+    <<: *service-base
+    entrypoint: ["oh-role"]
+    environment:
+      <<: *common-env
+      OH_ROLE: worker
+    # 不发布端口（内部消费队列）
+
+  # ---- Beat 角色（celery beat 调度） ----
+  beat:
+    <<: *service-base
+    entrypoint: ["oh-role"]
+    environment:
+      <<: *common-env
+      OH_ROLE: beat
+    # 不发布端口
+
+volumes:
+  openharness-config:
+    name: openharness-config
+  oh-pg:
+    name: openharness-pg
+  oh-redis:
+    name: openharness-redis
+  oh-minio:
+    name: openharness-minio
+  oh-videos:
+    name: openharness-videos
+  oh-workspaces:
+    name: openharness-workspaces

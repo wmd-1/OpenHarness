@@ -24,12 +24,23 @@ class Settings(BaseSettings):
     # --- Storage ---
     video_dir: Path = Path("/var/openharness/videos")
     workspace_root: Path = Path("/workspaces")
+    # Backend selector + S3 settings (scale-multi-instance Phase 3, R4).
+    # storage_kind: "local" (NFS/shared volume) or "s3" (S3-compatible bucket).
+    storage_kind: str = "local"
+    s3_endpoint: str | None = None
+    s3_bucket: str | None = None
+    s3_region: str | None = None
+    s3_access_key: str | None = None
+    s3_secret_key: str | None = None
 
     # --- oh CLI ---
     oh_bin: str = "/root/.local/bin/oh"
     headless_shell_path: str = "/opt/chrome-headless-shell-linux64/chrome-headless-shell"
 
     # --- Worker ---
+    # Explicit worker identity (OH_WORKER_ID). When unset, each worker process
+    # generates an ephemeral uuid used for heartbeat/reclaim (scale-multi-instance).
+    worker_id: str | None = None
     celery_concurrency: int = 4
     task_timeout_default: int = 900  # seconds
     task_timeout_min: int = 30
@@ -45,6 +56,19 @@ class Settings(BaseSettings):
 
     # --- Cleanup ---
     cleanup_retention_days: int = 7
+
+    # --- Scheduler backend (scale-multi-instance Phase 6) ---
+    # "celery" (default) uses the Celery broker; "temporal" selects the Temporal
+    # stub (not wired by default — placeholder for a future migration).
+    scheduler_backend: str = "celery"
+
+    # --- Worker queue tiers + concurrency cap (Phase 7) ---
+    # Comma-separated queue names consumed by workers, ordered high -> low
+    # priority. A task's ``priority`` column (1-10) maps to one of these tiers.
+    worker_queues: str = "high,normal,low"
+    # Global cap on concurrently running ``oh`` render subprocesses per worker
+    # process (protects Chrome/ffmpeg memory under horizontal scale-out).
+    max_concurrent_renders: int = 4
 
     # --- API Key (optional) ---
     api_key: str | None = None

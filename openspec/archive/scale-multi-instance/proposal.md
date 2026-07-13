@@ -130,3 +130,30 @@
 | Redis 全不可用致存活检测失效 | Med | High | 已知边界：Redis HA（哨兵/集群）不在本 change 范围，依赖既有部署；Redis 全宕时 worker 注册/心跳/取消键均不可用，reclaim 与跨副本取消语义降级（§11.7 剩余风险延伸，不纳入正常验收） |
 
 > **Redis 高可用边界**：Redis 哨兵 / 集群等高可用部署**不在本 change 范围**，依赖既有部署环境。Redis 完全不可用时，worker 存活注册、heartbeat、取消 key 全部失效，reclaim 与跨副本取消语义降级——此为 §11.7 剩余风险的延伸，不作为正常宕机验收门禁。
+
+
+---
+
+## Archive Information
+
+**Archived:** 2026-07-13
+**Outcome:** Successfully implemented (Phase 1–7, all Quality Gates PASSED)
+
+### Test Result
+`pytest tests/service` → **78 passed / 1 skipped** (2026-07-13)
+
+### Specs Updated
+- `openspec/specs/video-service-hardening.md` — MODIFY「Video download」(S3 302 redirect) + ADD R7–R13 (ownership / heartbeat-reclaim / object-storage / observability / horizontal-scaling / worker-concurrency)
+
+### Files Modified / Added (highlights)
+- Migrations: `002_scale_multi_instance_columns.py`, `003_storage_kind.py`
+- Workers: `tasks.py` (claim/success-guard/heartbeat/render-semaphore), `beat.py` (recover_lost_tasks), `identity.py`, `scheduler.py`, `celery_app.py` (tiered queues)
+- Storage: `storage/base.py` (presigned_url), `storage/s3.py` (S3VideoStorage), `storage/local.py`
+- Observability: `app/observability/{metrics,logging,tracing}.py`, `routers/health.py` (/readyz + S3 ping), `main.py` wiring
+- API: `routers/videos.py` (scheduler enqueue + /file 302), `config.py`, `models.py`, `schemas.py`, `deps.py`
+- Topology: `docker-compose.prod.yml`, `Dockerfile` (oh-role entrypoint, deps)
+- Deps: `pyproject.toml` (boto3 / prometheus-client / structlog / psutil / opentelemetry)
+- Tests: `test_phase1_statemachine.py`, `test_phase2_liveness.py`, `test_phase2_cancel.py`, `test_phase3_storage.py`, `test_observability.py`, `test_scheduler.py`, `test_concurrency.py`
+
+### Deferred (needs live Docker env)
+End-to-end multi-replica acceptance (`--scale`, Grafana 30-min soak, MinIO restart) — sandbox has no running Docker daemon. Code-level coverage provided by the passing test suite.

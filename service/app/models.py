@@ -4,7 +4,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Enum, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -15,6 +15,7 @@ class Base(DeclarativeBase):
 class TaskStatus(str, enum.Enum):
     QUEUED = "queued"
     RUNNING = "running"
+    RETRYING = "retrying"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELED = "canceled"
@@ -52,3 +53,19 @@ class VideoTask(Base):
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # --- Multi-instance scaling columns (scale-multi-instance, Phase 1) ---
+    worker_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    cancellation_requested: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+
+    # --- Storage backend (scale-multi-instance Phase 3, R4) ---
+    # Which backend the artifact was written to, so the download endpoint can
+    # resolve the matching backend (default "local" for legacy/backfilled rows).
+    storage_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="local")

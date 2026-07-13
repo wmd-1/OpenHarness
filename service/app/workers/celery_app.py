@@ -20,6 +20,10 @@ celery_app.conf.update(
     task_track_started=True,
     worker_prefetch_multiplier=1,
     broker_connection_retry_on_startup=True,
+    # Phase 7: support priority-tiered queues (high/normal/low). For the Redis
+    # broker, routing is driven by the queue set at enqueue time (scheduler);
+    # this cap is honored by AMQP brokers and documents intent for Redis.
+    task_queue_max_priority=10,
 )
 
 # Periodic schedule. cleanup_expired_tasks is idempotent (deleting an already
@@ -31,6 +35,25 @@ celery_app.conf.beat_schedule = {
         "task": "cleanup_expired_tasks",
         "schedule": 86400.0,  # daily
     },
+    # Lost-task reclaim (scale-multi-instance R8/R9). Idempotent via a row-lock
+    # UPDATE, so running it from a single beat replica is sufficient; should
+    # multiple beats run it, double-reclaim/double re-enqueue cannot happen.
+    "recover-lost-tasks": {
+        "task": "recover_lost_tasks",
+        "schedule": 30.0,  # every 30s
+    },
+}
+
+# Phase 7: default queue tier for ``generate_video``. The scheduler sets an
+# explicit queue (high/normal/low) from the task's ``priority`` column; this
+# route is the safety-net for any enqueue that omits a queue.
+celery_app.conf.task_routes = {
+    "generate_video": {"queue": "normal"},
 }
 
 celery_app.autodiscover_tasks(["app.workers.tasks"])
+
+# Register the liveness (heartbeat) signal handlers and the periodic reclaim
+# task. Importing the module wires up worker_process_init (per-replica
+# registration + heartbeat refresh) and the recover_lost_tasks celery task.
+from app.workers import beat  # noqa: E402,F401

@@ -42,3 +42,11 @@ class VideoStorage(Protocol):
     def exists(self, key: str) -> bool:
         """Check whether a stored video exists."""
         ...
+
+    def presigned_url(self, key: str, expires: int = 3600) -> str | None:
+        """Return a time-limited download URL, or ``None`` if unsupported.
+
+        S3 backends return a signed URL; local/NFS backends return ``None``
+        so callers fall back to streaming (scale-multi-instance R4).
+        """
+        ...

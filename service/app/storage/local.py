@@ -41,3 +41,8 @@ class LocalVideoStorage:
 
     def exists(self, key: str) -> bool:
         return (self._root / key).exists()
+
+    def presigned_url(self, key: str, expires: int = 3600) -> str | None:
+        # Local/NFS storage has no concept of a presigned URL; callers fall
+        # back to streaming the file directly (scale-multi-instance R4).
+        return None

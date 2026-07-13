@@ -6,13 +6,20 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
+from app.observability.logging import configure_logging
+from app.observability.metrics import metrics_router
+from app.observability.tracing import setup_tracing
 from app.routers import health, videos
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: startup / shutdown hooks."""
-    # Startup
+    # Startup (Phase 5 observability). `configure_logging` is idempotent;
+    # `setup_tracing` is a silent no-op if OpenTelemetry is unavailable, so the
+    # service always boots regardless of the tracing dependency state (R8).
+    configure_logging()
+    setup_tracing(app)
     yield
     # Shutdown
     from app.db import engine
@@ -58,3 +65,5 @@ if settings.api_key:
 # Register routers
 app.include_router(videos.router)
 app.include_router(health.router)
+# Phase 5 (R8): Prometheus scrape endpoint exposing oh_render_inflight etc.
+app.include_router(metrics_router)
