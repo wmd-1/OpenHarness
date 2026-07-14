@@ -29,6 +29,13 @@ rejected with `403` (or `404` to avoid revealing existence).
 - WHEN tenant B calls `GET /v1/videos` (list)
 - THEN the response contains only tenant B's tasks (no `t1`) and no task data from other tenants
 
+> **Worker async path:** HTTP requests set `app.current_tenant` via middleware, but workers have
+> no request context. After a worker `claim`s / reads a task, it MUST issue `SET LOCAL
+> app.current_tenant = :task.tenant_id` (the `tenant_id` carried on the claimed task row itself,
+> never a global) on its DB connection before any access (terminal write, audit_log, artifact
+> metadata). This keeps RLS valid on the async execution path; the same binding applies if the
+> fallback "centralized query layer" is used instead of RLS.
+
 ---
 
 ### Requirement: R15 — API Key authentication
@@ -128,6 +135,14 @@ write MUST carry the current token and be rejected if stale:
   stale-token write is discarded, producing no valid artifact). R9 does NOT cover the artifact
   store, so this is the genuine fix for "double-run that lands on disk".
 
+> **Lease semantics (authoritative):** `lease_token` denotes *task execution ownership*, not
+> workflow/local retry. It changes ONLY on ownership transfer — first `claim` (new owner) or
+> `reclaim` (owner declared dead, redispatched). The same owner's local retry or a Temporal
+> Activity retry (same workflow instance) does NOT bump the token; it keeps the same token, so
+> the fence never rejects the owner's own writes. Both Celery and Temporal paths MUST follow this
+> single bump rule. Migration sets `lease_token BIGINT NOT NULL DEFAULT 0`; first claim yields
+> `1`, avoiding any `NULL + 1` ambiguity.
+
 This upgrades R8 from a heartbeat/TTL (non-lease) mechanism to a strict lease: a preempted owner
 can produce **NO valid side effect** (neither terminal state nor stored artifact). Note: the
 preempted owner may still *waste compute* rendering locally; the guarantee is that no valid
@@ -148,6 +163,12 @@ duplicate terminal state or artifact survives.
 - GIVEN a worker is alive but its Redis registration briefly drops (false reclaim)
 - WHEN the preempted owner later writes with its (now stale) token
 - THEN all its writes are fenced; no valid duplicate terminal state or artifact survives
+
+#### Scenario: stale owner heartbeat is rejected (prevents false-alive)
+- GIVEN task reclaimed (lease_token bumped) to a new owner
+- WHEN the old (preempted) owner issues a heartbeat with its stale token
+- THEN the guarded heartbeat `UPDATE ... WHERE lease_token=:old_token` affects 0 rows
+- AND beat still reclaims on stale `heartbeat_at` (the old owner is not mistaken for alive)
 
 ---
 
