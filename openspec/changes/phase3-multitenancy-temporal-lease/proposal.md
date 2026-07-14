@@ -89,7 +89,7 @@ Phase 2（`scale-multi-instance`，已归档）已让视频服务支持多副本
 - WS-B 复用 Phase 2 的 `Scheduler` 抽象，仅补真正实现，符合「不锁死后端」。
 - WS-C 复用 Phase 2 的 `worker_id`/`heartbeat_at`/`attempt` 列，新增 `lease_token`，向前兼容（历史任务 `lease_token=0` 视为无 fencing，新 claim 从 1 起）。
 - 三者保持 `result_backend=Redis`、复用 Redis abort key（WS-B 内取消信号）。
-- **WS-B × WS-C 后端耦合（须澄清）**：WS-C 的 lease fence 依赖 `recover_lost_tasks` 来 bump `lease_token`，而 reclaim 与心跳存活注册耦合在 Celery（`beat.py`）。`OH_SCHEDULER_BACKEND=temporal` 下若不跑 Celery 渲染 worker，R20 的严格保证不成立。须在 WS-B 设计中选择：声明 WS-C 仅限 Celery 后端，或把 reclaim 抽离为后端无关（详 Phase 3 计划 §8.2）。
+- **WS-B × WS-C 后端耦合（已拍板）**：WS-C 的 lease fence 依赖 `recover_lost_tasks` 来 bump `lease_token`，而 reclaim 与心跳存活注册耦合在 Celery（`beat.py`）。`OH_SCHEDULER_BACKEND=temporal` 下若不跑 Celery 渲染 worker，R20 的严格保证不成立。**已决策**：将 reclaim/watch-dog 抽象为与调度后端无关的独立组件，初版由 Celery 调用（行为不变），再让 Temporal 复用同一套逻辑，不固化「Strict Lease 仅支持 Celery」（详 Phase 3 计划 §8.2）。
 
 ## Success Criteria
 
