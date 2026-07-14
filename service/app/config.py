@@ -73,6 +73,16 @@ class Settings(BaseSettings):
     # --- API Key (optional) ---
     api_key: str | None = None
 
+    # --- Multi-tenancy auth (Phase 3, WS-A) ---
+    # When True, every external request MUST present a valid X-API-Key; missing
+    # or invalid keys are rejected with 401. When False (dev/default), unkeyed
+    # requests are scoped to the `system` tenant (no auth enforced yet).
+    auth_require_keys: bool = False
+    # Header that, when present, marks the request as a trusted internal caller
+    # and scopes it to the `system` tenant (bypassing X-API-Key). Intended to be
+    # set only by an ingress/proxy that strips it from external traffic.
+    auth_trusted_header: str | None = None
+
     # --- CORS ---
     # Comma-separated explicit origins. Empty => no CORS allowed.
     # Credentials are only enabled when explicit origins are configured

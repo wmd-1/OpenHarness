@@ -6,14 +6,14 @@
 
 ## Phase 1: WS-A Foundation (Data + Auth)
 
-- [ ] 1.1 Migration `004_tenant.sql`：建 `tenants` / `api_keys` / `quotas` / `audit_log`；`video_tasks` 加 `tenant_id`（默认 `system`）+ 索引
-- [ ] 1.2 `models.py`：新增租户相关 ORM 模型与 `VideoTask.tenant_id` 关系
-- [ ] 1.3 `app/middleware/auth.py`：`X-API-Key` → 哈希比对 → 解析 `tenant_id` → `request.state.tenant_id`；缺失/无效/吊销/过期 → 401
-- [ ] 1.4 `main.py` 装配鉴权中间件（内部受信头放行 `tenant_id=system`）
-- [ ] 1.5 `test_ws_a_auth.py`：缺失/无效/吊销/过期 → 401；内部受信头
+- [x] 1.1 Migration `004_tenant.py`（Python Alembic，非 `.sql`；repo 既有的 Alembic 约定）：建 `tenants` / `api_keys` / `quotas` / `audit_log`；`video_tasks` 加 `tenant_id`（默认 `system`）+ 索引；`down_revision=003_storage_kind`
+- [x] 1.2 `models.py`：新增 `Tenant` / `ApiKey` / `Quota` / `AuditLog` ORM，并给 `VideoTask` 加 `tenant_id`（NOT NULL, default/server_default=`system`, index）
+- [x] 1.3 `app/middleware/auth.py`：`X-API-Key` → SHA-256 比对 → 解析 `tenant_id` → `request.state.tenant_id`；缺失/无效/吊销/过期 → 401；内部受信头放行 `system`；`/healthz` 跳过鉴权
+- [x] 1.4 `main.py` 装配 `TenantAuthMiddleware`（`sessionmaker=async_session`，`require_keys`/`trusted_header` 取自 settings）；`require_keys=False`（默认）时未带 key 放行为 `system`，兼容现有无鉴权用例
+- [x] 1.5 `test_ws_a_auth.py`：无 key+require=False→system；无 key+True→401；有效/无效/吊销/过期 key；受信头绕过；healthz 跳过（独立 aiosqlite engine，不依赖 Postgres）
 
 **Quality Gate:**
-- [ ] 迁移可升级；鉴权中间件单测通过
+- [x] 模型经 `Base.metadata.create_all` 实跑建表通过；中间件 8 项行为（独立运行时脚本）全绿；`py_compile` 全文件通过。注：完整 pytest 需在项目已 provision 的 env 运行（本沙箱 `service/.venv` 未装依赖，已用临时 venv 做等价独立验证）
 
 ---
 

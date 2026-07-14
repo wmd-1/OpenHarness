@@ -6,6 +6,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
+from app.db import async_session, engine
+from app.middleware.auth import TenantAuthMiddleware
 from app.observability.logging import configure_logging
 from app.observability.metrics import metrics_router
 from app.observability.tracing import setup_tracing
@@ -46,6 +48,15 @@ app.add_middleware(
     allow_credentials=bool(_cors_origins),
     allow_methods=["*"],
     allow_headers=["*"],
+)
+
+# Phase 3 (WS-A): resolve the calling tenant from X-API-Key (or trusted
+# internal header) and attach it to request.state for downstream isolation.
+app.add_middleware(
+    TenantAuthMiddleware,
+    sessionmaker=async_session,
+    require_keys=settings.auth_require_keys,
+    trusted_header=settings.auth_trusted_header,
 )
 
 # Optional API key middleware
