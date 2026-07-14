@@ -1,6 +1,6 @@
 # ignore everything under src
 .claude/
-.qoder/
+.qoder/*
 # openspec/
 !.qoder/plans/
 

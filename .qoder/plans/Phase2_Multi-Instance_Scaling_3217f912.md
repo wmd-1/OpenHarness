@@ -6,12 +6,14 @@
 > - **重新核实**：已实读当前代码，§0 明确区分「已验证事实 VERIFIED」与「基于设计的推断 INFERRED」，并把上一轮 review 中的两处误判纠正。
 > - **暂不采纳**（保留为 Future Work / Design Notes，不作二期必做）：强制 worker lease、强制 `recover_lost_tasks` 单 beat、新增 Redis Pub/Sub cancel bus（优先复用现有 Redis abort key）。
 > - 全文严格区分 **已验证事实** 与 **设计建议**，推断性内容一律标注 `[INFERRED]`。
+>
+> **（2026-07-14 落地回填）** —— 本变更已全部实现并归档：7/7 Phase Quality Gate **PASSED**，`pytest tests/service` → **78 passed / 1 skipped**；补建 `docker-compose.e2e.yml` + `Dockerfile.e2e` 多副本 e2e 验证台，最终 **19/19 PASS**（R7–R13 全绿），报告见 `e2e/e2e_report_v8.txt`。PR #2 已开，分支 `feature/scale-multi-instance`（base `main`）。e2e 期间发现并修复 **5 个产品 bug**（详见 §18 与新 §19），已回灌对应正文（§9 认领播种心跳、§11.3 `RETRYING` 大写 + beat 队列路由、§10.2 s3 超时、§13 health 2s 上限）。
 
 ---
 
 ## 0. 代码核实结论（VERIFIED vs INFERRED）
 
-本节所有「VERIFIED」均来自对当前仓库（`feature/harden-hyperprames-video-service` 已合并入 `main`）源文件的实读，非设计文档推断。
+本节所有「VERIFIED」均来自对当前仓库源文件的实读，非设计文档推断。核实基线为**一期** `feature/harden-hyperprames-video-service`（已合并 `main`，基线 spec `video-service-hardening.md` 含 R1–R6）；**二期** `scale-multi-instance` 的实现分支为 `feature/scale-multi-instance`（PR #2，base `main`）。
 
 ### 0.1 已通过代码验证的事实（VERIFIED）
 
@@ -276,6 +278,8 @@ def claim(task_id, worker_id) -> bool:
 
 同 `task_id` 重投安全：claim 的 WHERE 只认 `queued`/`retrying`，已在 `running` 的不会被二次 claim。
 
+> **落地修正（e2e Bug②，回填 2026-07-14）**：计划假设认领统一走 `claim()` 函数；实际 `generate_video_task` 走**内联认领**（`task.worker_id=wid; task.status=RUNNING; db.commit()`），并不直接调用 `claim()`。无论哪条路径，**认领时必须同步写 `heartbeat_at`**（R8 的种子心跳）：`claim()` 在 UPDATE 里已含 `heartbeat_at=now()`；内联认领在 e2e 修复后也补了 `task.heartbeat_at = datetime.now(timezone.utc)`（`tasks.py` ~L268）。若漏写，所有 RUNNING 任务 `heartbeat_at` 恒为 NULL，reclaim 的 `heartbeat_at < cutoff` 条件对 NULL 恒假，孤儿任务**永不接管**（这是 e2e TEST C 反复 FAIL 的根本原因）。此外 `recover_lost_tasks` 的扫描条件已显式纳入 `heartbeat_at IS NULL`（见 §11.3），作为双保险。
+
 新增列（`idempotency_key` 已存在，V5）：
 
 | 列 | 用途 |
@@ -316,6 +320,8 @@ class S3VideoStorage(VideoStorage):
         return self.s3.generate_presigned_url("get_object",
             Params={"Bucket": self.bucket, "Key": key}, ExpiresIn=expires)
 ```
+
+> **落地修正（e2e Bug④，回填 2026-07-14）**：boto3 client **必须配置超时**，否则 MinIO 宕机时 `head_object`/`generate_presigned_url` 会阻塞到默认 socket 超时（数十秒~分钟），进而卡死 `/healthz` 的 S3 探测（e2e TEST E 曾因无超时导致 `/healthz` 挂死、`code=000`）。实现：`boto3.client(..., config=Config(connect_timeout=3, read_timeout=5))`（`storage/s3.py`）。建议写入对象存储客户端的默认约定。
 
 ### 10.3 `/v1/videos/{id}/file` 行为（MODIFY 一期 R3）
 
@@ -364,7 +370,7 @@ def recover_lost_tasks():
               AND NOT worker_alive(worker_id)          # 查 Redis oh:worker:{worker_id}
     for tid, wid in lost:
         updated = UPDATE video_tasks
-           SET status='retrying', worker_id=NULL, attempt=attempt+1
+           SET status=RETRYING, worker_id=NULL, attempt=attempt+1   # RETRYING 为原生 enum 大写标签（见下方落地修正）
          WHERE id=:tid AND status='running'
            AND heartbeat_at < now() - interval '60s'
            AND NOT worker_alive(:wid)
@@ -376,6 +382,11 @@ def recover_lost_tasks():
 - **翻转幂等**：Postgres 行锁保证只有一个 beat 的 UPDATE 命中该行；其余 beat 的 UPDATE 影响 0 行 → 不重投 → **无双投**。
 - 因此 `recover_lost_tasks` **无需强制单 beat**（用户标注暂不采纳项之一）；单 beat 仅作为减少重复扫描的可选优化。
 - 重投后 `worker_id=NULL`，新 worker claim 时写入自己的 id；即便旧（已死）进程僵尸式回写，`_mark_succeeded` 的 guard（§11.4）也会拒绝。
+
+> **落地修正（回填 2026-07-14）**：
+> 1. **翻转目标状态为 `RETRYING`（大写原生 enum）**，非 `retrying` 小写。迁移 `002` 用 `ALTER TYPE taskstatus ADD VALUE 'RETRYING'`（大写）——若写成小写，PG `readyz`/枚举反序列化会 500（e2e 期间已踩并修正）。
+> 2. **存活判据实际实现为 `alive_worker_ids()`**：beat 每次 `SCAN oh:worker:*` 拿到存活 worker 集合，扫描条件为 `worker_id NOT IN (alive)`；且**当 Redis 不可达时 `recover_lost_tasks` 直接返回 0、整轮跳过**，避免「Redis 挂 → 误把所有陈旧任务当孤儿批量 reclaim」的雪崩（设计比初稿 `worker_alive(wid)` 单点查询更稳）。
+> 3. **beat 周期任务必须显式路由到 `normal` 队列（e2e Bug①，隐性致命）**：本计划的 `task_routes` 只把 `generate_video` 路由到 `normal`，而 `recover_lost_tasks` / `cleanup_expired_tasks` 依赖 `task_default_queue='celery'` 落到默认 `celery` 队列——但 worker 只消费 `high/normal/low`，**无人消费 `celery` 队列** → 自动 reclaim 与过期清理**静默从不执行**（R7–R9 在生产失效）。修复：在 `task_routes` 中显式加入 `recover_lost_tasks` / `cleanup_expired_tasks` → `{"queue": "normal"}`（见 `celery_app.py`）。这是计划初稿未覆盖的隐性故障点，已补入 §8.1 参数表与 §16 交付清单。
 
 ### 11.4 Success / 状态写入 Guard（防 clobber）
 
@@ -467,6 +478,7 @@ client DELETE /v1/videos/{id}
 | 健康检查 | `/healthz`（DB+Redis+S3 ping）、`/readyz`（队列消费状态） | k8s readiness 用 |
 
 - `/readyz` 需新增（当前仅 `/healthz`，V8 现状）；S3 ping 在 `storage_kind=s3` 时探测。
+- **S3 健康探测必须设上限（e2e Bug⑤，回填 2026-07-14）**：`/healthz` 的 S3 ping 用 `await asyncio.wait_for(线程池探测, timeout=2.0)` 包裹；即便 MinIO 宕机，探测也应在 ~2s 内返回「s3 降级但 HTTP 200」而非挂死。R11 的「非致命降级」承诺依赖此上限（见 `routers/health.py`）。
 - 采集侧（otel-collector / prometheus / grafana）纳入 `docker-compose.prod.yml` 或独立观测栈；缺省不影响核心服务（R8）。
 
 ---
@@ -515,21 +527,58 @@ client DELETE /v1/videos/{id}
 | 可观测性 | `service/app/observability/{metrics,tracing,logging}.py` | + `/readyz` |
 | 配置 | `service/app/config.py` | s3_* / OH_ROLE / scheduler_backend / WORKER_QUEUES |
 | 依赖 | `service/pyproject.toml` | boto3/botocore/otel/prom/structlog/psutil（slowapi 随多租户延期） |
-| 迁移 | `service/alembic/versions/*` | 新增列 + backfill（§11.6） |
-| 测试 | `tests/service/` | claim 幂等 / reclaim 幂等 / success guard 防覆盖 / presigned redirect / 跨副本取消 / `/readyz` |
+| 迁移 | `service/alembic/versions/002_scale_multi_instance_columns.py`、`003_storage_kind.py` | 新增列 + backfill（§11.6）；`002` 含 `ALTER TYPE taskstatus ADD VALUE 'RETRYING'`（**大写**，见 §11.3 修正） |
+| beat 队列路由 | `service/app/workers/celery_app.py` | `task_routes` 显式把 `recover_lost_tasks` / `cleanup_expired_tasks` → `normal`（e2e Bug①，§11.3 修正） |
+| s3 客户端超时 | `service/app/storage/s3.py` | `Config(connect_timeout=3, read_timeout=5)`（e2e Bug④，§10.2 修正） |
+| health 探测上限 | `service/app/routers/health.py` | S3 ping `asyncio.wait_for(..., 2.0)`（e2e Bug⑤，§13 修正） |
+| 单测 | `tests/service/` | 78 passed / 1 skipped（含 claim 幂等 / reclaim 幂等 / success guard 防覆盖 / presigned redirect / 跨副本取消 / `/readyz`） |
+| **e2e 验证台** | `docker-compose.e2e.yml` + `Dockerfile.e2e` + `e2e/run_e2e.sh` + `e2e/oh_stub.sh` | 基于 `openharness_hyperprames_qwen-tts_pptx:v0.1.9_v0.7.20_v1.3_v2.0` 派生 `oh-e2e:latest`；`--scale api=2 --scale worker=2` 起栈，覆盖 R7–R13；报告 `e2e/e2e_report_v8.txt`（**19/19 PASS**）。独立于 `docker-compose.prod.yml`，仅供本地多副本验收 |
 
 ---
 
 ## 17. 验收标准（修正）
 
-1. `docker compose -f docker-compose.prod.yml up -d --scale worker=5 --scale api=3` 稳定接收 100 并发提交（修正 I3）。
-2. 杀掉任意 worker 容器（进程真死、注册键正常过期的正常场景），其 `running` 任务 ≤ 90s 内被另一副本安全接管（`running→retrying→running`），**终态不被旧 worker 覆盖**（§11.4 强保证）。Redis 异常 / 长暂停下的误 reclaim 属已知剩余风险（§11.7），不纳入本条验收。
-3. `DELETE /v1/videos/{id}` ≤ 5s 内目标 worker 上 oh 进程退出，终态 `canceled`（跨副本，复用 Redis abort key，§12）。
-4. Grafana 可见 `oh_render_inflight` / `oh_render_duration_seconds_bucket`，p95 持续 30 分钟无异常。
-5. MinIO 重启后 API 重连成功，已完成任务下载链接仍可用（存量回退流式，R4）。
-6. `tests/service/` 新增 claim 幂等 / reclaim 幂等 / success guard 防覆盖 / 正常宕机接管回归用例全绿（50 + 新增）。（Redis failover / 长暂停下的误 reclaim 作为设计层剩余风险记录于 §11.7，不作门禁。）
+> **验收状态（2026-07-14 回填）**：原计划中「需 live Docker / Deferred」的 R7–R13 项目**已全部由多副本 e2e 验证台跑通**（`docker-compose.e2e.yml` + `Dockerfile.e2e`，`--scale api=2 --scale worker=2`），最终 **19/19 PASS**（报告 `e2e/e2e_report_v8.txt`）。下方逐条标注实际验证方式（TEST A–F）。
+
+1. `docker compose -f docker-compose.prod.yml up -d --scale worker=5 --scale api=3` 稳定接收 100 并发提交（修正 I3）。**e2e 以 `--scale api=2 --scale worker=2` 验证拓扑可用（TEST A）；100 并发压测未在本环境执行，留生产灰度。**
+2. 杀掉任意 worker 容器（进程真死、注册键正常过期的正常场景），其 `running` 任务 ≤ 90s 内被另一副本安全接管（`running→retrying→running`），**终态不被旧 worker 覆盖**（§11.4 强保证）。Redis 异常 / 长暂停下的误 reclaim 属已知剩余风险（§11.7），不纳入本条验收。**e2e TEST C 通过：杀 worker-1 后，孤儿任务经 DB owner 变更 + attempt 0→1 被存活副本接管。**
+3. `DELETE /v1/videos/{id}` ≤ 5s 内目标 worker 上 oh 进程退出，终态 `canceled`（跨副本，复用 Redis abort key，§12）。**e2e TEST D 通过：api-2 跨副本取消 api-1 上运行的任务。**
+4. Grafana 可见 `oh_render_inflight` / `oh_render_duration_seconds_bucket`，p95 持续 30 分钟无异常。**e2e TEST A 确认 `/metrics` 暴露 `oh_render_inflight`；30 分钟 soak 未执行（见 §18 指标口径说明）。**
+5. MinIO 重启后 API 重连成功，已完成任务下载链接仍可用（存量回退流式，R4）。**e2e TEST E 通过：`/healthz` 在 MinIO 宕机时降级为 `s3=false` 但 HTTP 200，重启后恢复。**
+6. `tests/service/` 新增 claim 幂等 / reclaim 幂等 / success guard 防覆盖 / 正常宕机接管回归用例全绿（50 + 新增）。（Redis failover / 长暂停下的误 reclaim 作为设计层剩余风险记录于 §11.7，不作门禁。）**实际：78 passed / 1 skipped。**
 
 > 说明：初稿验收 #6「切 `SCHEDULER_BACKEND=temporal` 启动后一期 e2e 全绿」属三期范畴（§14），已从二期验收移除。
+
+---
+
+## 18. 落地状态总览（2026-07-14 回填）
+
+| 项 | 状态 |
+|---|---|
+| OpenSpec 变更 `scale-multi-instance` | 已实现 7/7 Phase，Quality Gate 全 PASSED，已归档并入基线 `openspec/specs/video-service-hardening.md`（R1–R13） |
+| 单测 `pytest tests/service` | **78 passed / 1 skipped** |
+| 多副本 e2e | **19/19 PASS**（`docker-compose.e2e.yml` + `Dockerfile.e2e`，`--scale api=2 --scale worker=2`），报告 `e2e/e2e_report_v8.txt` |
+| PR | #2 已开，分支 `feature/scale-multi-instance`（base `main`），描述含 e2e 结论与 5 个修复 |
+| 验收（原 Deferred 的 R7–R13） | 已全部验证为 PASSED（见 §17 逐条标注） |
+| 关键定性 | Ownership/Reclaim = heartbeat + Redis TTL（非 lease）；success guard 可靠防终态覆盖，但**不能严格证明绝不双跑**（§11.5/§11.7） |
+
+**指标口径重要说明（e2e 实测）**：`oh_render_inflight` 注册在**各自进程默认 registry**，但 `/metrics` 只在 API 进程暴露，worker 是独立 celery 进程 → **API 上该值恒为 0，无法经 API 抓取 per-worker 并发**。Grafana 若想看真实并发，需 worker 自带 `/metrics` 或共享后端。e2e 因此改用「数 worker 容器内 `sleep`（stub 渲染进程）并发数」来验证单 worker 并发上限（TEST F：`MAX_CONCURRENT_RENDERS=1` 时 `max_observed=1`）。
+
+---
+
+## 19. e2e 期间发现并修复的 5 个产品 Bug（回填 2026-07-14）
+
+> 这些 bug 在单测下不暴露，只有多副本 e2e 才触发；已随修复 commit 推上 PR #2。均为计划初稿未覆盖的隐性故障点，已分别回灌对应章节（§9 / §10.2 / §11.3 / §13 / §16）。
+
+| # | Bug | 现象 | 根因 | 修复 | 对应章节 |
+|---|---|---|---|---|---|
+| ① | beat 周期任务静默不执行 | 杀 worker 后孤儿任务永不接管；`LLEN celery` 持续堆积 | `task_routes` 只把 `generate_video` 路由 `normal`，`recover_lost_tasks`/`cleanup_expired_tasks` 落默认 `celery` 队列，而 worker 不消费 `celery` 队列 | `task_routes` 显式加 `recover_lost_tasks`/`cleanup_expired_tasks` → `normal` | §11.3 / §16 |
+| ② | 认领不写心跳 → 孤儿任务永不接管 | 同上表象，但根因更深：`heartbeat_at` 恒为 NULL | `generate_video_task` 走内联认领且未写 `heartbeat_at`；reclaim 的 `heartbeat_at < cutoff` 对 NULL 恒假 | 认领时补 `task.heartbeat_at = now()`；reclaim 扫描显式纳入 `heartbeat_at IS NULL` | §9 / §11.3 |
+| ③ | 存活判据仅看心跳陈旧度 | 同上，NULL 场景漏判 | `recover_lost_tasks` 原未处理 `heartbeat_at IS NULL`（从未被刷新的孤儿） | 扫描条件 `(heartbeat_at IS NULL) \| (heartbeat_at < cutoff)`，仍受 `worker_id NOT IN alive` 守卫 | §11.3 |
+| ④ | `/healthz` 在 MinIO 宕机时挂死 | TEST E 探测 `code=000`，health 端点超时 | boto3 client 无 connect/read 超时，MinIO 不可达时阻塞到 socket 默认超时 | `boto3.client(..., config=Config(connect_timeout=3, read_timeout=5))` | §10.2 / §16 |
+| ⑤ | S3 健康探测无上限 | 同上（与④耦合） | `_s3_ok` 未设超时包裹 | `await asyncio.wait_for(线程池探测, timeout=2.0)`，保证 ~2s 内降级返回 HTTP 200 | §13 / §16 |
+
+> 注：Bug ②③ 实际是同一根因链（认领未播种心跳 + 扫描未含 NULL）的不同切面，合并修复后 reclaim 才真正生效。这也是 e2e TEST C 早期反复 FAIL 的真正原因（曾误判为会话暂停杀脚本）。
 
 ---
 
