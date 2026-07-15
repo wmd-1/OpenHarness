@@ -6,6 +6,8 @@ so it does not depend on a running Postgres and does not touch the global app.
 
 from __future__ import annotations
 
+import pytest
+import pytest_asyncio
 from datetime import datetime, timedelta, timezone
 
 from httpx import ASGITransport, AsyncClient
@@ -31,7 +33,7 @@ async def _inner_app(scope, receive, send):
     await resp(scope, receive, send)
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def sessionmaker():
     engine = create_async_engine(SQLALCHEMY_DATABASE_URL, echo=False)
     sm = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
