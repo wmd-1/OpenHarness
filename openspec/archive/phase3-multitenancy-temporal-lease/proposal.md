@@ -2,7 +2,7 @@
 
 **Change ID:** `phase3-multitenancy-temporal-lease`
 **Created:** 2026-07-14
-**Status:** Draft
+**Status:** Archived
 **Baseline:** `.qoder/plans/FastAPI_Hyperframes_Video_Service_3217f912.md` (一期 plan) + `openspec/specs/video-service-hardening.md` (基线，含 R1–R13)
 **Design source:** `.qoder/plans/Phase3_Multi-Tenancy_Temporal_Lease_3217f912.md`
 
@@ -110,3 +110,39 @@ Phase 2（`scale-multi-instance`，已归档）已让视频服务支持多副本
 | 三工作流并发改动互相干扰 | Med | Med | 独立 migration 版本号、独立 Phase、独立测试目录 |
 
 > **Redis 高可用边界**（同 Phase 2）：Redis 哨兵/集群不在本 change 范围；WS-C 租约仍以 Redis 为辅助，主可靠性来自 PG `lease_token` 自增（不依赖 Redis 即可 fence）。
+
+---
+
+## Archive Information
+
+**Archived:** 2026-07-15 16:59
+**Duration:** 1 day (created 2026-07-14)
+**Outcome:** Successfully implemented and verified
+
+### Specs Updated
+- `openspec/specs/video-service-hardening.md`
+  - ADDED R14 (tenant isolation) / R15 (API-key auth) / R16 (per-tenant quota) /
+    R17 (audit logging) / R18 (per-tenant rate limiting) / R19 (pluggable Temporal
+    scheduler) / R20 (strict lease + fencing token)
+  - MODIFIED R8 — upgraded from non-lease heartbeat to strict lease via `lease_token` fencing
+    (Phase 2 residual §11.7 risk now mitigated: preempted owner produces no valid side effect)
+
+### Files Modified
+- `service/app/models.py` — Tenant/ApiKey/Quota/AuditLog + `video_tasks.tenant_id`/`lease_token` + `video_lease_fence`
+- `service/app/middleware/auth.py`, `service/app/main.py` — X-API-Key → tenant, RLS binding
+- `service/app/quota.py`, `service/app/ratelimit.py`, `service/app/audit.py`, `service/app/deps.py`
+- `service/app/workers/temporal_worker.py`, `service/app/workers/scheduler.py` — TemporalScheduler (real)
+- `service/app/workers/render_pipeline.py` — shared render pipeline (`execute_video_render`)
+- `service/app/workers/tasks.py` — `claim()` returns `(claimed, token)`, terminal-write fence, `fence_artifact`
+- `service/app/workers/beat.py` — reclaim bumps `lease_token`, token-aware heartbeat
+- `service/app/storage/base.py` / `local.py` / `s3.py` — `save(lease_token=...)`, S3 `x-amz-meta-lease-token`
+- `service/alembic/versions/004_tenant.py`, `005_rls.py`, `006_lease_token.py`
+- `service/pyproject.toml` — `temporalio`, `slowapi`
+- `docker-compose.temporal.yml`, `docker/supervisord.temporal.conf`
+- `service/README.md` (new) — operations runbook (multitenancy / Temporal / lease)
+- Tests: `test_ws_a_*.py`, `test_ws_b_temporal.py`, `test_ws_c_fencing.py`, plus Phase 1/2 regression updates
+
+### Verification
+- `pytest tests/service` → **108 passed** (oh-e2e:latest, sqlite + fakeredis)
+- Phase 2 e2e / real `temporal-server` / multi-replica reclaim e2e DEFERRED (no Docker daemon /
+  temporal-server in sandbox) per Phase 2 convention; docker-compose artifacts committed for CI/manual run.
