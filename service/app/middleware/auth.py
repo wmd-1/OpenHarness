@@ -28,6 +28,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from app.tenant_ctx import set_current_tenant
+
 SYSTEM_TENANT = "system"
 
 
@@ -68,11 +70,13 @@ class TenantAuthMiddleware(BaseHTTPMiddleware):
         # Liveness / scrape endpoints never require auth.
         if request.url.path in self.skip_paths:
             request.state.tenant_id = self.system_tenant
+            set_current_tenant(self.system_tenant)
             return await call_next(request)
 
         # Trusted internal caller bypass (header set by an upstream proxy).
         if self.trusted_header and request.headers.get(self.trusted_header):
             request.state.tenant_id = self.system_tenant
+            set_current_tenant(self.system_tenant)
             return await call_next(request)
 
         raw_key = request.headers.get("X-API-Key")
@@ -84,6 +88,7 @@ class TenantAuthMiddleware(BaseHTTPMiddleware):
                     content={"detail": "Invalid, revoked, or expired API key"},
                 )
             request.state.tenant_id = tenant_id
+            set_current_tenant(tenant_id)
             return await call_next(request)
 
         # No key presented.
@@ -92,6 +97,7 @@ class TenantAuthMiddleware(BaseHTTPMiddleware):
                 status_code=401, content={"detail": "API key required"}
             )
         request.state.tenant_id = self.system_tenant
+        set_current_tenant(self.system_tenant)
         return await call_next(request)
 
     async def _resolve(self, raw_key: str) -> str | None:

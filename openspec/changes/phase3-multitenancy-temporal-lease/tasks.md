@@ -19,17 +19,18 @@
 
 ## Phase 2: WS-A Isolation / Quota / Audit / Rate-Limit
 
-- [ ] 2.1 DB 访问层注入 `tenant_id`：`tasks.py` / `storage` / `routers` 查询与写均带 `tenant_id`
-- [ ] 2.2 `app/quota.py`：提交前查 `quotas`（并发/日限），超限 → 429
-- [ ] 2.3 `routers/videos.py`：按 `tenant_id` 限速（slowapi `rate_per_min`）；**须用 Redis limiter backend** 以保证 `api×N` 副本下为全局共享计数（slowapi 默认内存后端会按副本独立计数，实际放行 N×rate）
-- [ ] 2.4 `app/audit.py`：变更型操作异步写 `audit_log`
-- [ ] 2.5 `test_ws_a_tenant_isolation.py`：跨租户 GET/DELETE → 403/404
-- [ ] 2.6 `test_ws_a_quota.py`：超并发/超日限 → 429
-- [ ] 2.7 `test_ws_a_ratelimit.py`：按租户限速
-- [ ] 2.8 `test_ws_a_audit.py`：审计记录存在且字段正确
+- [x] 2.1 DB 访问层注入 `tenant_id`：`routers` 查询（get/download/events/delete）与写（create）均带 `tenant_id`；PG 经 `SET LOCAL app.current_tenant` 驱动 RLS（见 2.9）
+- [x] 2.2 `app/quota.py`：提交前查 `quotas`（并发/日限），超限 → 429
+- [x] 2.3 `app/ratelimit.py`：按 `tenant_id` 限速；基于 `limits` 异步存储原语（`MemoryStorage`/`RedisStorage`），**须用 Redis backend** 以保证 `api×N` 副本下为全局共享计数（内存后端按副本独立计数，实际放行 N×rate）；以 FastAPI **依赖**形式注入（`create_video` 签名保持 `create_video(body, db)` 不被破坏）
+- [x] 2.4 `app/audit.py`：变更型操作（create/cancel/delete）异步写 `audit_log`，与业务写同一事务原子提交；审计写失败非致命
+- [x] 2.5 `test_ws_a_tenant_isolation.py`：跨租户 GET/DELETE → 404（system 可读任意）
+- [x] 2.6 `test_ws_a_quota.py`：超并发/超日限 → 429
+- [x] 2.7 `test_ws_a_ratelimit.py`：按租户限速 → 429（memory backend）
+- [x] 2.8 `test_ws_a_audit.py`：审计记录存在且字段正确（action/tenant/target_type/target_id）
+- [x] 2.9 Migration `005_rls.py`：PG RLS 启用 `video_tasks`/`audit_log`，按 `app.current_tenant` 隔离、`system` 豁免（PG-only，sqlite 跳过）
 
 **Quality Gate:**
-- [ ] 隔离/配额/限速/审计用例全绿；Phase 1/2 回归不退化
+- [x] 隔离/配额/限速/审计用例全绿；Phase 1/2 回归不退化。`pytest tests/service` 全量 **99 passed**（oh-e2e:latest，sqlite + memory limiter + apply_async stub；RLS 由 PG 在 CI 校验）
 
 ---
 

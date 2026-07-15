@@ -73,6 +73,12 @@ class Settings(BaseSettings):
     # --- API Key (optional) ---
     api_key: str | None = None
 
+    # --- Rate limiting (Phase 3, WS-A) ---
+    # Backend for the per-tenant submit rate limiter. A Redis URI is required
+    # in production so the count is shared globally across api×N replicas; use
+    # ``memory://`` for single-replica / test runs. Defaults to the broker URL.
+    rate_limit_storage_uri: str = ""
+
     # --- Multi-tenancy auth (Phase 3, WS-A) ---
     # When True, every external request MUST present a valid X-API-Key; missing
     # or invalid keys are rejected with 401. When False (dev/default), unkeyed
