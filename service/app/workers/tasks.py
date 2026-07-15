@@ -239,107 +239,14 @@ class TransientError(Exception):
     max_retries=2,
 )
 def generate_video_task(self, task_id: str) -> None:
-    """Celery task: run oh CLI to generate a video and persist results."""
-    # Celery serializes the task id as a string; the model's UUID primary key
-    # needs a uuid.UUID object for DB lookups, so coerce once up front.
-    task_id = uuid.UUID(str(task_id))
-    storage = LocalVideoStorage()
+    """Celery task: run oh CLI to generate a video and persist results.
 
-    with _sync_session() as db:
-        task = db.get(VideoTask, task_id)
-        if task is None:
-            logger.error("Task %s not found in DB", task_id)
-            return
-        if task.status == TaskStatus.CANCELED:
-            return
-
-        # Claim ownership of this task for the lifetime of this worker process
-        # (scale-multi-instance R7): the worker_id lets the heartbeat/reclaim
-        # flow tell which replica owns a running task.
-        wid = get_worker_id()
-        task.worker_id = wid
-        task.status = TaskStatus.RUNNING
-        task.started_at = datetime.now(timezone.utc)
-        # Seed heartbeat_at at claim time (scale-multi-instance R7/R8). The
-        # liveness loop refreshes it while the worker is alive; if the worker
-        # dies, this timestamp goes stale and recover_lost_tasks reclaims the
-        # task. Without this, heartbeat_at stays NULL and the reclaim scan's
-        # `heartbeat_at < cutoff` condition can never match -> orphaned tasks.
-        task.heartbeat_at = datetime.now(timezone.utc)
-        task.celery_task_id = self.request.id
-        db.commit()
-
-        prompt = task.prompt
-        timeout = task.timeout_seconds
-        extra_oh_args = json.loads(task.extra_oh_args) if task.extra_oh_args else []
-
-    workspace = Path(settings.workspace_root) / str(task_id)
-    workspace.mkdir(parents=True, exist_ok=True)
-
-    with _sync_session() as db:
-        task = db.get(VideoTask, task_id)
-        if task is not None:
-            task.workspace_path = str(workspace)
-            db.commit()
-
-    try:
-        # Track an in-flight render so Grafana can see per-replica concurrency
-        # (Phase 5 / R8). Phase 7 caps this with a global semaphore so the
-        # worker never spawns more than MAX_CONCURRENT_RENDERS oh processes.
-        with render_inflight():
-            with render_semaphore:
-                result = run_oh(
-                    prompt=prompt,
-                    cwd=workspace,
-                    timeout=timeout,
-                    on_log_line=lambda line: _append_log(task_id, line),
-                    extra_args=extra_oh_args,
-                    is_aborted=lambda: _abort_requested(task_id),
-                    oh_bin=settings.oh_bin,
-                    headless_shell_path=settings.headless_shell_path,
-                )
-
-        # Guard: if the user canceled while running, do NOT overwrite the
-        # status back to SUCCEEDED/FAILED. The worker is authoritative here.
-        if _abort_requested(task_id):
-            _mark_canceled(task_id, RuntimeError("canceled by user"), worker_id=wid)
-            return
-
-        _update_log_tail(task_id)
-
-        if result.exit_code != 0:
-            _mark_failed(
-                task_id,
-                RuntimeError(f"oh exited with code {result.exit_code}"),
-                exit_code=result.exit_code,
-                worker_id=wid,
-            )
-            return
-
-        mp4 = locate_output_file(result.stdout, workspace)
-        meta = probe_mp4(mp4)
-        final_key = storage.save(task_id, mp4)
-        _mark_succeeded(task_id, final_key, meta, result, worker_id=wid)
-
-        # Publish done marker into the log stream (consumed by SSE).
-        try:
-            _redis_client().xadd(f"oh:logs:{task_id}", {"line": _DONE_MARKER})
-        except Exception:
-            logger.warning("Failed to publish done marker for task %s", task_id)
-
-    except OutputNotFoundError as exc:
-        # Deterministic failure — record and stop (do NOT re-raise, so the
-        # message is acked rather than infinitely redelivered).
-        _update_log_tail(task_id)
-        _mark_failed(task_id, exc, worker_id=wid)
-    except TransientError:
-        # Transient infrastructure errors still trigger the autoretry_for retry.
-        raise
-    except Exception as exc:
-        # Deterministic failure — record and stop (no re-raise).
-        _update_log_tail(task_id)
-        _mark_failed(task_id, exc, worker_id=wid)
-        return
+    The render body lives in
+    :func:`app.workers.render_pipeline.execute_video_render` so the Temporal
+    ``VideoGenerationActivity`` runs identical logic. ``TransientError`` is
+    re-raised by the pipeline and retried via ``autoretry_for``.
+    """
+    execute_video_render(task_id, celery_task_id=self.request.id)
 
 
 @celery_app.task(name="cleanup_expired_tasks")
@@ -384,3 +291,9 @@ def cleanup_expired_tasks() -> None:
 
         db.commit()
         logger.info("Cleaned up %d expired tasks", len(expired))
+
+
+# Imported at the bottom to avoid a circular import: `render_pipeline` imports
+# the shared helpers (claim / _mark_* / _abort_requested / TransientError) from
+# this module, so they must be defined before this line runs.
+from app.workers.render_pipeline import execute_video_render  # noqa: E402,F401

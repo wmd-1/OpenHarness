@@ -22,6 +22,14 @@ import os
 
 os.environ.setdefault("OH_DB_URL", "sqlite+aiosqlite:////tmp/oh_service_tests.db")
 os.environ.setdefault("OH_RATE_LIMIT_STORAGE_URI", "memory://")
+# WS-B pipeline uses the *sync* engine (settings.db_sync_url) and writes video
+# files / workspaces to disk. Point these at sandbox-friendly temp paths so the
+# Temporal Activity unit test (ActivityEnvironment) can run without Postgres.
+os.environ.setdefault("OH_DB_SYNC_URL", "sqlite:////tmp/oh_service_tests_sync.db")
+os.environ.setdefault("OH_VIDEO_DIR", "/tmp/oh_service_videos")
+os.environ.setdefault("OH_WORKSPACE_ROOT", "/tmp/oh_service_workspaces")
+# Default backend stays celery so the bulk of tests don't need temporal-server.
+os.environ.setdefault("OH_SCHEDULER_BACKEND", "celery")
 
 import pytest  # noqa: E402
 

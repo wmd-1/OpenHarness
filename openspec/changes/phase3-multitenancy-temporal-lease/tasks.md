@@ -36,15 +36,26 @@
 
 ## Phase 3: WS-B Real Temporal Migration
 
-- [ ] 3.1 依赖 `temporalio`；`app/workers/temporal_worker.py` 启动 Temporal worker
-- [ ] 3.2 `scheduler.py`：`TemporalScheduler.enqueue` → `start_workflow`；`cancel` → `workflow handle.cancel`
-- [ ] 3.3 `VideoGenWorkflow` + `VideoGenerationActivity`：封装 `generate_video_task`；Activity 心跳 + `retry_policy`
-- [ ] 3.4 `docker-compose.temporal.yml`：引入 `temporal-server` + UI（仅 temporal 路径）
-- [ ] 3.5 `OH_SCHEDULER_BACKEND=temporal` 启动期校验 temporal 可达，否则显式报错
-- [ ] 3.6 `test_ws_b_temporal.py`：起 temporal-server → enqueue/cancel 经 Temporal；Celery 默认路径回归
+> 目标：把 `TemporalScheduler` 从占位空实现变为真实接入 `temporal-server` 的后端；Celery 仍为默认，行为不变。Temporal 为**可选启用**，生产默认 Celery。`docker-compose.temporal.yml` 提供独立 temporal 栈。详细迁移设计见 [`design.md`](design.md)（WS-B）。
+
+- [x] 3.1 依赖与配置：`service/pyproject.toml` 增加 `temporalio`（异步 SDK）；`config.py` 增加 `temporal_host`（默认 `localhost:7233`）、`temporal_namespace`（默认 `default`）、`temporal_task_queue`（默认 `video-gen`）、`temporal_client_timeout`（默认 5s）
+- [x] 3.2 共享渲染管线重构：把 `tasks.generate_video_task` 的渲染主体（claim → `run_oh` → 持久化终态/产物/日志/abort 检查）抽成 `app/workers/render_pipeline.py: execute_video_render(task_id)`；Celery `generate_video_task` 与 Temporal Activity **复用同一函数**，Celery 路径行为零改动（含 `claim`/`_mark_*`/`_abort_requested`/`_append_log`/`render_semaphore`）
+- [x] 3.3 `app/workers/temporal_worker.py`：
+  - `VideoGenWorkflow`（`@workflow.defn`，name=`VideoGenWorkflow`）：`async def run(self, task_id)` → `await workflow.execute_activity(VideoGenerationActivity.run, task_id, start_to_close_timeout=…, heartbeat_timeout=…, retry_policy=RetryPolicy(maximum_attempts=3, backoff=…))`
+  - `VideoGenerationActivity`（`@activity.defn`，name=`VideoGenerationActivity`）：`async def run(self, task_id)` → 调用 `execute_video_render(task_id)`；在 activity 事件循环内以 `activity.heartbeat(...)` 周期上报（满足 `heartbeat_timeout`）
+  - `main()`：建 `temporalio.client.Client.connect(temporal_host, namespace=…)` → 起 `Worker(client, task_queue, workflows=[VideoGenWorkflow], activities=[VideoGenerationActivity])`，前台运行（供 supervisord 托管）
+- [x] 3.4 `scheduler.py`：`TemporalScheduler` 真正实现：`enqueue(task_id, priority=)` → 惰性建 `temporalio.client.Client` 并 `await client.start_workflow(VideoGenWorkflow.run, task_id, id=f"video-gen-{task_id}", task_queue=settings.temporal_task_queue)`，返回 workflow id；`cancel(workflow_id)` → `handle = client.get_workflow_handle(workflow_id)` → `await handle.cancel()`；`Scheduler` 协议改为 async（Celery 路径同样 await，行为不变）
+- [x] 3.5 启动期 fail-fast：`OH_SCHEDULER_BACKEND=temporal` 时，(a) `temporal_worker.py` 建 client 失败即进程退出（非零）；(b) `app/main.py` 增加 startup 事件，backend=temporal 且 `temporalio.client.Client.connect` 不可达时 `raise` 使 API 容器启动失败（不静默回退 Celery）。Celery 默认路径不触碰 temporal
+- [x] 3.6 部署：`docker-compose.temporal.yml` 引入 `temporalio/auto-setup`（server）+ `temporalio/ui`；openharness 服务经 supervisord 覆盖改为只跑 `api` + `temporal-worker`（不跑 celery worker/beat），`OH_SCHEDULER_BACKEND=temporal`；提供 `docker/supervisord.temporal.conf`
+- [x] 3.7 测试 `test_ws_b_temporal.py`（沙箱可跑 + docker/CI 分离）：
+  - 3.7.1 用 `temporalio.testing.ActivityEnvironment` 直接跑 `VideoGenerationActivity.run`，`run_oh` 以 monkeypatch 桩 + sqlite，断言终态/产物写入正确（**无需 temporal-server**）
+  - 3.7.2 `get_scheduler()` 路由：`scheduler_backend=celery` → `CeleryScheduler`；`=temporal` → `TemporalScheduler`；`TemporalScheduler` 在未连 server 时 `enqueue`/`cancel` 给出清晰错误（fail-fast 行为）
+  - 3.7.3 完整 e2e（起 temporal-server → enqueue/cancel 走 Temporal）标记为 **docker/CI 校验**（本沙箱无 temporal-server，同 Phase 2 e2e DEFERRED 约定），在 compose 中可跑
 
 **Quality Gate:**
-- [ ] Temporal 路径端到端可用；Celery 默认回归全绿
+- [x] Activity 经 `ActivityEnvironment` 单测绿（沙箱）；scheduler 路由 + fail-fast 单测绿；Celery 默认路径回归全绿（`pytest tests/service` → **104 passed**）
+- [ ] `docker-compose.temporal.yml` 起栈后提交/取消经 Temporal worker 执行（CI/手动 docker 校验）
+- [x] 注：真实 temporal-server e2e 不在此沙箱跑（无 server 二进制），与 Phase 2 端到端 e2e 同样 DEFERRED，由 docker compose + CI 校验
 
 ---
 

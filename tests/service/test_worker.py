@@ -14,18 +14,24 @@ from sqlalchemy.orm import Session
 
 from app.models import Base, TaskStatus, VideoTask
 from app.storage.local import LocalVideoStorage
-from app.workers import tasks as worker_tasks
+from app.workers import render_pipeline, tasks as worker_tasks
 from app.workers.parser import VideoMeta
 
 
 @pytest.fixture
 def sync_db():
-    """Point the worker's sync engine at a fresh in-memory sqlite DB."""
+    """Point the worker's sync engine at a fresh in-memory sqlite DB.
+
+    The render body now lives in ``render_pipeline`` (shared by Celery + Temporal),
+    so both ``worker_tasks`` and ``render_pipeline`` engines are pointed here.
+    """
     eng = create_engine("sqlite://")
     Base.metadata.create_all(eng)
     worker_tasks._sync_engine = eng
+    render_pipeline._sync_engine = eng
     yield eng
     worker_tasks._sync_engine = None
+    render_pipeline._sync_engine = None
     eng.dispose()
 
 
@@ -51,10 +57,10 @@ def test_happy_path_marks_succeeded(sync_db):
             resolution="2x2",
             fps=1,
         )
-        with patch.object(worker_tasks, "run_oh") as m_run, patch.object(
-            worker_tasks, "locate_output_file"
-        ) as m_locate, patch.object(worker_tasks, "probe_mp4") as m_probe, patch.object(
-            worker_tasks, "LocalVideoStorage"
+        with patch.object(render_pipeline, "run_oh") as m_run, patch.object(
+            render_pipeline, "locate_output_file"
+        ) as m_locate, patch.object(render_pipeline, "probe_mp4") as m_probe, patch.object(
+            render_pipeline, "LocalVideoStorage"
         ) as m_storage:
             m_run.return_value = _class_with(
                 exit_code=0, stdout="**输出文件:** `out.mp4`"
@@ -80,7 +86,7 @@ def test_nonzero_exit_marks_failed(sync_db):
         s.commit()
         tid = str(t.id)
 
-    with patch.object(worker_tasks, "run_oh") as m_run:
+    with patch.object(render_pipeline, "run_oh") as m_run:
         m_run.return_value = _class_with(exit_code=3, stdout="boom")
         worker_tasks.generate_video_task.run(task_id=tid)
 
@@ -99,7 +105,7 @@ def test_cancel_guard_prevents_overwrite_to_succeeded(sync_db):
         s.commit()
         tid = str(t.id)
 
-    with patch.object(worker_tasks, "run_oh") as m_run, patch.object(
+    with patch.object(render_pipeline, "run_oh") as m_run, patch.object(
         worker_tasks, "_abort_requested", return_value=True
     ):
         m_run.return_value = _class_with(

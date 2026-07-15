@@ -72,7 +72,7 @@ class TestCreateVideo:
     @patch("app.routers.videos.get_scheduler")
     async def test_create_video_success(self, mock_celery, client: AsyncClient):
         """Should create a task and enqueue it."""
-        mock_celery.return_value.enqueue = MagicMock()
+        mock_celery.return_value.enqueue = AsyncMock()
         response = await client.post(
             "/v1/videos",
             json={"prompt": "Make a video"},
@@ -92,7 +92,7 @@ class TestCreateVideo:
     @patch("app.routers.videos.get_scheduler")
     async def test_create_video_with_idempotency(self, mock_celery, client: AsyncClient, db_session):
         """Should return existing task for same idempotency key."""
-        mock_celery.return_value.enqueue = MagicMock()
+        mock_celery.return_value.enqueue = AsyncMock()
 
         # Create first task
         r1 = await client.post(
@@ -129,7 +129,7 @@ class TestCreateVideo:
     @patch("app.routers.videos.get_scheduler")
     async def test_create_video_rejects_forbidden_oh_arg(self, mock_celery, client: AsyncClient):
         """Should reject disallowed extra_oh_args with 422 at the API edge."""
-        mock_celery.return_value.enqueue = MagicMock()
+        mock_celery.return_value.enqueue = AsyncMock()
         response = await client.post(
             "/v1/videos",
             json={
@@ -146,7 +146,7 @@ class TestGetVideo:
     @patch("app.routers.videos.get_scheduler")
     async def test_get_existing_task(self, mock_celery, client: AsyncClient, db_session):
         """Should return task details."""
-        mock_celery.return_value.enqueue = MagicMock()
+        mock_celery.return_value.enqueue = AsyncMock()
         create_resp = await client.post(
             "/v1/videos",
             json={"prompt": "Make a video"},

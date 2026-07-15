@@ -22,6 +22,21 @@ async def lifespan(app: FastAPI):
     # service always boots regardless of the tracing dependency state (R8).
     configure_logging()
     setup_tracing(app)
+    # Phase 3 (WS-B): fail-fast if the Temporal backend is selected but the
+    # server is unreachable — never silently fall back to Celery (R19 scenario).
+    if (settings.scheduler_backend or "celery").lower() == "temporal":
+        try:
+            from temporalio.client import Client
+
+            await Client.connect(
+                settings.temporal_host,
+                namespace=settings.temporal_namespace,
+            )
+        except Exception as exc:  # pragma: no cover - exercised in docker/CI
+            raise RuntimeError(
+                f"OH_SCHEDULER_BACKEND=temporal but temporal-server unreachable "
+                f"at {settings.temporal_host}: {exc}"
+            ) from exc
     yield
     # Shutdown
     from app.db import engine

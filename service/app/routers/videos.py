@@ -180,8 +180,9 @@ async def create_video(
         raise
 
     # Enqueue render via the configured scheduler (Phase 6). Priority drives
-    # the queue tier (high/normal/low) for Phase 7 priority consumption.
-    get_scheduler().enqueue(str(task.id), priority=task.priority)
+    # the queue tier (high/normal/low) for Phase 7 priority consumption. The
+    # scheduler's enqueue/cancel are async (WS-B supports the Temporal backend).
+    await get_scheduler().enqueue(str(task.id), priority=task.priority)
 
     return VideoCreateResponse(
         task_id=task.id,

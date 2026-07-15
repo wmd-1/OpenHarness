@@ -62,6 +62,14 @@ class Settings(BaseSettings):
     # stub (not wired by default — placeholder for a future migration).
     scheduler_backend: str = "celery"
 
+    # --- Temporal (WS-B, optional scheduler backend) ---
+    # Only consulted when OH_SCHEDULER_BACKEND=temporal. The API enqueues renders
+    # as Temporal workflows; the temporal-worker process runs the workflow/activity.
+    temporal_host: str = "localhost:7233"
+    temporal_namespace: str = "default"
+    temporal_task_queue: str = "video-gen"
+    temporal_client_timeout: int = 5  # seconds
+
     # --- Worker queue tiers + concurrency cap (Phase 7) ---
     # Comma-separated queue names consumed by workers, ordered high -> low
     # priority. A task's ``priority`` column (1-10) maps to one of these tiers.

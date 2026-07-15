@@ -1,8 +1,8 @@
-"""Scheduler abstraction (scale-multi-instance Phase 6 / Phase 7).
+"""Scheduler abstraction (scale-multi-instance Phase 6 / Phase 7 / WS-B).
 
 Decouples task enqueue/cancel from the concrete backend so a future Temporal
-migration is a drop-in. The default backend is Celery; Temporal is a placeholder
-and is disabled by default (selected via ``OH_SCHEDULER_BACKEND=temporal``).
+migration is a drop-in. The default backend is Celery; Temporal is a real
+implementation selected via ``OH_SCHEDULER_BACKEND=temporal``.
 
 Enqueue routing also drives Phase 7 priority tiers: a task's numeric
 ``priority`` (1-10) is mapped to a named queue (high/normal/low) so workers can
@@ -38,11 +38,11 @@ class Scheduler(Protocol):
 
     backend: str
 
-    def enqueue(self, task_id: str, *, priority: int = 5) -> str:
+    async def enqueue(self, task_id: str, *, priority: int = 5) -> str:
         """Enqueue a render and return the backend task id."""
         ...
 
-    def cancel(self, celery_task_id: str) -> None:
+    async def cancel(self, celery_task_id: str) -> None:
         """Best-effort cancel of a previously enqueued backend task."""
         ...
 
@@ -52,14 +52,14 @@ class CeleryScheduler:
 
     backend = "celery"
 
-    def enqueue(self, task_id: str, *, priority: int = 5) -> str:
+    async def enqueue(self, task_id: str, *, priority: int = 5) -> str:
         async_result = generate_video_task.apply_async(
             (task_id,),
             queue=queue_for_priority(priority),
         )
         return async_result.id
 
-    def cancel(self, celery_task_id: str) -> None:
+    async def cancel(self, celery_task_id: str) -> None:
         # Durable, cross-replica cancellation is owned by the DELETE endpoint
         # (DB flag + Redis abort key). This is a best-effort broker revoke for
         # a task that has not yet started on a worker.
@@ -69,17 +69,44 @@ class CeleryScheduler:
 
 
 class TemporalScheduler:
-    """Placeholder for a future Temporal backend. Not wired by default."""
+    """Real Temporal backend (WS-B): enqueue/cancel as Temporal workflows.
+
+    The Temporal SDK is imported lazily so the Celery default path never depends
+    on ``temporalio`` at runtime. ``enqueue`` starts a ``VideoGenWorkflow``;
+    ``cancel`` cancels the workflow by its deterministic id.
+    """
 
     backend = "temporal"
+    _client = None
 
-    def enqueue(self, task_id: str, *, priority: int = 5) -> str:
-        raise NotImplementedError(
-            "TemporalScheduler is a placeholder; set OH_SCHEDULER_BACKEND=celery (default)."
+    async def _get_client(self):
+        if TemporalScheduler._client is None:
+            from temporalio.client import Client
+
+            from app.workers.temporal_worker import VideoGenWorkflow
+
+            TemporalScheduler._client = await Client.connect(
+                settings.temporal_host,
+                namespace=settings.temporal_namespace,
+            )
+        return TemporalScheduler._client
+
+    async def enqueue(self, task_id: str, *, priority: int = 5) -> str:
+        client = await self._get_client()
+        from app.workers.temporal_worker import VideoGenWorkflow
+
+        handle = await client.start_workflow(
+            VideoGenWorkflow.run,
+            task_id,
+            id=f"video-gen-{task_id}",
+            task_queue=settings.temporal_task_queue,
         )
+        return handle.id
 
-    def cancel(self, celery_task_id: str) -> None:
-        raise NotImplementedError("TemporalScheduler is a placeholder.")
+    async def cancel(self, workflow_id: str) -> None:
+        client = await self._get_client()
+        handle = client.get_workflow_handle(workflow_id)
+        await handle.cancel()
 
 
 def get_scheduler() -> Scheduler:
