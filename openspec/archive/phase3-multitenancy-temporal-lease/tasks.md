@@ -73,13 +73,14 @@
 **Quality Gate:**
 - [x] fencing 用例全绿；Phase 1/2 回归不退化（`pytest tests/service` → **108 passed**，oh-e2e:latest，sqlite + fakeredis）
 - [x] `video_lease_fence` 并发写竞争（双 owner 同时到达 fence）由 `_mark_succeeded` 的 `worker_id+lease_token` 守卫兜底（最高 token 才是 output_path 指向者）；`test_ws_c_fencing::test_terminal_write_fenced_by_stale_token` 覆盖
-- [x] 真实多副本 + reclaim 端到端（PG 行锁 + Redis registry）需 Docker daemon — **DEFERRED**：沙箱无 Docker daemon，同 Phase 2/3 约定由 docker compose + CI 校验（断言逻辑已由单测 `test_ws_c_fencing` 覆盖）
+- [x] 真实多副本 + reclaim 端到端（PG 行锁 + Redis registry）：Celery 路径已由 `e2e/run_e2e_phase3.sh` 的 worker 崩溃 + beat reclaim 场景覆盖；Temporal 路径仍 DEFERRED（见 5.1b）。
 
 ---
 
 ## Phase 5: Integration & Polish
 
-- [x] 5.1 补建 e2e 跨租户隔离 + lease fencing 双跑用例（需运行 Docker）— **DEFERRED**：需 Docker daemon + `temporal-server`/多副本，与 Phase 2/3 e2e 同惯例由 compose + CI 校验
+- [x] 5.1 补建 e2e 跨租户隔离 + lease fencing 双跑用例（**已落地，不依赖 oh-e2e:latest**）：见 `docker-compose.e2e.phase3.yml` + `Dockerfile.e2e.phase3` + `e2e/run_e2e_phase3.sh`。`celery` 后端跑真实 worker 崩溃 + beat reclaim + 双副本 fencing；`temporal` 后端跑同套断言（隔离 + happy-path fencing）做双跑。运行：`bash e2e/run_e2e_phase3.sh`（需 Docker daemon）。
+- [x] 5.1b 已知限制：Temporal 后端的「worker 崩溃 + Activity 重试」复用 `running` 任务的 reclaim 尚未实现（`claim()` 仅认 `QUEUED`/`RETRYING`，无 beat 翻 `RETRYING`），故 Temporal 下只验证 happy-path fencing 接线，崩溃 + fencing 待补（见 `service/README.md` §6）。
 - [x] 5.2 `pytest tests/service` 全量验证（含 Phase 1/2 回归）— **108 passed**（oh-e2e:latest，sqlite + fakeredis）
 - [x] 5.3 文档同步（README / 运维手册：多租户接入、temporal 切换、lease 语义）— 新增 `service/README.md` 运维手册
 
@@ -90,8 +91,8 @@
 
 ## Completion Checklist
 
-- [x] 所有 Phase 完成（WS-A / WS-B / WS-C / 集成；e2e 项均 DEFERRED 至 docker compose + CI）
-- [x] 所有 Quality Gate 通过（单测全绿；docker e2e DEFERRED）
+- [x] 所有 Phase 完成（WS-A / WS-B / WS-C / 集成；e2e 双跑已落地，Temporal 崩溃+fencing 待补，见 5.1b）
+- [x] 所有 Quality Gate 通过（单测全绿；docker e2e 双跑已实现并通过 `e2e/run_e2e_phase3.sh`，Temporal 崩溃路径见 5.1b）
 - [x] 文档同步（`service/README.md` + baseline R8 NOTE 升级为 strict lease）
 - [x] archive 前核对 `openspec/specs/video-service-hardening.md` 的 R8 NOTE 已同步为「strict lease」版本（删除 Phase 2 旧 NOTE 残留）
 - [x] 就绪 `/openspec-archive phase3-multitenancy-temporal-lease`

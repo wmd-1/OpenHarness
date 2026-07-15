@@ -1,0 +1,40 @@
+# Phase 3 (WS-A multi-tenancy + WS-B Temporal + WS-C strict lease/fencing)
+# end-to-end derived image.
+#
+# IMPORTANT: this does NOT build on the scale-multi-instance `oh-e2e:latest`
+# intermediate image. It is built directly FROM the real OpenHarness base image
+# and only overlays the (Phase 3) `service/`, an offline `oh` render stub, the
+# tenant seed script, and an OH_ROLE entrypoint that also knows the `seed` and
+# `temporal-worker` roles. This keeps the Phase 3 e2e fully decoupled from the
+# scale change's test image.
+ARG BASE_IMAGE=openharness_hyperframes_qwen-tts_pptx:v0.1.9_v0.7.20_v1.3_v2.0
+FROM ${BASE_IMAGE}
+
+USER root
+
+# --- Phase 3 runtime deps (into the image's existing venv) -----------------
+# temporalio : WS-B scheduler backend (real Temporal worker)
+# limits     : WS-A per-tenant rate limiter (limits.aio.storage, needs >=3)
+# aiosqlite  : seed/test helpers
+RUN /root/.openharness-venv/bin/pip install --no-cache-dir \
+    "temporalio==1.*" \
+    "limits==3.*" \
+    "aiosqlite"
+
+# --- Overlay the Phase 3 service code (the code under test) ----------------
+COPY service /opt/oh-service
+
+# --- Faithful oh stub (no API key needed for e2e) ---------------------------
+COPY e2e/oh_stub.sh /usr/local/bin/oh-stub
+RUN chmod +x /usr/local/bin/oh-stub
+
+# --- Tenant seed script (creates alpha/beta tenants + API keys) -------------
+COPY service/e2e_seed.py /opt/oh-service/e2e_seed.py
+
+# --- OH_ROLE entrypoint (api / worker / beat / migrate / seed / temporal-worker / serve)
+RUN printf '#!/bin/bash\ncd /opt/oh-service || exit 1\ncp -a /opt/oh-skills-builtin/. /root/.openharness/skills/ 2>/dev/null || true\ncase "${OH_ROLE:-serve}" in\n  api) exec uvicorn app.main:app --host 0.0.0.0 --port "${OH_API_PORT:-8000}" --workers "${OH_API_WORKERS:-1}";;\n  worker) exec celery -A app.workers.celery_app.celery_app worker -l info -c "${OH_CELERY_CONCURRENCY:-4}" -Q "${OH_WORKER_QUEUES:-high,normal,low}";;\n  beat) exec celery -A app.workers.celery_app.celery_app beat -l info;;\n  temporal-worker) exec python -m app.workers.temporal_worker;;\n  migrate) exec alembic upgrade head;;\n  seed) exec python e2e_seed.py;;\n  serve|*) exec /usr/local/bin/oh-serve;;\nesac\n' > /usr/local/bin/oh-role \
+    && chmod +x /usr/local/bin/oh-role
+
+ENV PYTHONPATH=/opt/oh-service
+WORKDIR /opt/oh-service
+ENTRYPOINT ["/usr/local/bin/oh-role"]

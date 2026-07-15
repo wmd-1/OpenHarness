@@ -1,0 +1,232 @@
+# Phase 3 (WS-A multi-tenancy + WS-B Temporal + WS-C strict lease/fencing)
+# end-to-end acceptance stack.
+#
+# Built DIRECTLY FROM the real OpenHarness base image (NOT from the
+# scale-multi-instance oh-e2e:latest image). Exercises the two integration
+# scenarios the unit suite cannot cover without Docker:
+#   1. cross-tenant isolation (X-API-Key auth + 404 on cross-tenant reads)
+#   2. strict lease / fencing under a real worker crash + beat reclaim
+#      (celery backend) and a happy-path fence under the temporal backend.
+#
+# Run with:  bash e2e/run_e2e_phase3.sh
+# (the runner sets OH_SCHEDULER_BACKEND per backend and brings up the right
+#  subset of services)
+x-common-env: &common-env
+  OH_DB_URL: "postgresql+asyncpg://oh:oh@postgres:5432/oh"
+  OH_DB_SYNC_URL: "postgresql+psycopg://oh:oh@postgres:5432/oh"
+  OH_DB_MIGRATION_URL: "postgresql+asyncpg://oh:oh@postgres:5432/oh"
+  OH_BROKER_URL: "redis://redis:6379/0"
+  OH_STORAGE_KIND: "s3"
+  OH_S3_ENDPOINT: "http://minio:9000"
+  OH_S3_BUCKET: "openharness"
+  OH_S3_REGION: "us-east-1"
+  OH_S3_ACCESS_KEY: "minioadmin"
+  OH_S3_SECRET_KEY: "minioadmin"
+  OH_OH_BIN: "/usr/local/bin/oh-stub"
+  OH_STUB_SLEEP_SECONDS: "${OH_STUB_SLEEP_SECONDS:-45}"
+  OH_SCHEDULER_BACKEND: "${OH_SCHEDULER_BACKEND:-celery}"
+  OH_CELERY_CONCURRENCY: "${OH_CELERY_CONCURRENCY:-4}"
+  OH_WORKER_QUEUES: "high,normal,low"
+  OH_MAX_CONCURRENT_RENDERS: "${OH_MAX_RENDERS:-4}"
+  OH_API_WORKERS: "1"
+  OH_API_PORT: "8000"
+  OH_RATE_LIMIT_STORAGE_URI: "redis://redis:6379/1"
+  OH_AUTH_REQUIRE_KEYS: "true"
+  OH_TEMPORAL_HOST: "temporal:7233"
+  OH_TEMPORAL_NAMESPACE: "default"
+  OH_TEMPORAL_TASK_QUEUE: "video-gen"
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: "${E2E_PROJECT:-e2ephase3}-postgres"
+    environment:
+      POSTGRES_USER: oh
+      POSTGRES_PASSWORD: oh
+      POSTGRES_DB: oh
+    volumes:
+      - oh-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U oh"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  redis:
+    image: redis:7
+    container_name: "${E2E_PROJECT:-e2ephase3}-redis"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: minio/minio:latest
+    container_name: "${E2E_PROJECT:-e2ephase3}-minio"
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - oh-minio:/data
+
+  createbuckets:
+    image: minio/mc:latest
+    container_name: "${E2E_PROJECT:-e2ephase3}-createbuckets"
+    depends_on:
+      - minio
+    entrypoint: ["sh", "-c"]
+    command: >
+      "until mc alias set local http://minio:9000 minioadmin minioadmin 2>/dev/null; do sleep 2; done;
+       mc mb -p local/openharness 2>/dev/null;
+       exit 0"
+
+  migrate:
+    image: oh-e2e-phase3:latest
+    container_name: "${E2E_PROJECT:-e2ephase3}-migrate"
+    environment:
+      <<: *common-env
+      OH_ROLE: migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  seed:
+    image: oh-e2e-phase3:latest
+    container_name: "${E2E_PROJECT:-e2ephase3}-seed"
+    environment:
+      <<: *common-env
+      OH_ROLE: seed
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  api1:
+    image: oh-e2e-phase3:latest
+    container_name: "${E2E_PROJECT:-e2ephase3}-api1"
+    environment:
+      <<: *common-env
+      OH_ROLE: api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      createbuckets:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+      seed:
+        condition: service_completed_successfully
+      temporal:
+        condition: service_started
+
+  api2:
+    image: oh-e2e-phase3:latest
+    container_name: "${E2E_PROJECT:-e2ephase3}-api2"
+    environment:
+      <<: *common-env
+      OH_ROLE: api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      createbuckets:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+      seed:
+        condition: service_completed_successfully
+      temporal:
+        condition: service_started
+
+  worker1:
+    image: oh-e2e-phase3:latest
+    container_name: "${E2E_PROJECT:-e2ephase3}-worker1"
+    environment:
+      <<: *common-env
+      OH_ROLE: worker
+      OH_WORKER_ID: worker1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      createbuckets:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+
+  worker2:
+    image: oh-e2e-phase3:latest
+    container_name: "${E2E_PROJECT:-e2ephase3}-worker2"
+    environment:
+      <<: *common-env
+      OH_ROLE: worker
+      OH_WORKER_ID: worker2
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      createbuckets:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+
+  beat:
+    image: oh-e2e-phase3:latest
+    container_name: "${E2E_PROJECT:-e2ephase3}-beat"
+    environment:
+      <<: *common-env
+      OH_ROLE: beat
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  temporal:
+    image: temporalio/auto-setup:latest
+    container_name: "${E2E_PROJECT:-e2ephase3}-temporal"
+    ports:
+      - "7233:7233"
+
+  temporal-worker:
+    image: oh-e2e-phase3:latest
+    container_name: "${E2E_PROJECT:-e2ephase3}-temporal-worker"
+    environment:
+      <<: *common-env
+      OH_ROLE: temporal-worker
+      OH_WORKER_ID: temporal-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      createbuckets:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+      temporal:
+        condition: service_started
+
+volumes:
+  oh-pg:
+  oh-minio:
