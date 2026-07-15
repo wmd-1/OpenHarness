@@ -208,3 +208,67 @@ server:
 - Temporal cluster HA, complex multi-Activity topologies, scheduler hot-swap.
 - WS-C lease/fencing coupling (reclaim/watch-dog as backend-agnostic) — tracked in Phase 4.
 - Temporal as the cancellation *sole* source of truth — Redis abort key retained.
+
+---
+
+## 9. WS-C — Strict lease + fencing token (R20)
+
+**Goal:** upgrade R8 from a heartbeat/TTL *heuristic* (which could in rare cases let a
+reclaimed owner still write a terminal state or a valid artifact) to a **strict lease**: a
+preempted owner can produce **no valid side effect** — neither a terminal state nor a stored
+artifact.
+
+### 9.1 Lease token semantics (authoritative)
+
+`video_tasks.lease_token BIGINT NOT NULL DEFAULT 0`. It denotes *task execution ownership*,
+not workflow/local retry. It changes ONLY on an ownership transfer:
+
+- first `claim` → `1` (column default 0, so `lease_token = lease_token + 1` yields 1 — no `NULL + 1`);
+- `reclaim` (beat declares owner dead, re-dispatches) → bumps once;
+- a *second* `claim` by the re-dispatched new owner → bumps once more.
+
+The same owner's local Celery retry or a Temporal Activity retry (same workflow instance) does
+**NOT** bump the token — it keeps the same token, so the fence never rejects the owner's own
+writes. Both Celery and Temporal paths use the single `claim()` bump rule.
+
+### 9.2 Components
+
+- **`tasks.claim(task_id, worker_id, celery_task_id=None) -> (claimed, token)`** — a single
+  conditional UPDATE (`WHERE status IN (QUEUED, RETRYING) AND (worker_id IS NULL OR worker_id = :wid)`)
+  with `lease_token = lease_token + 1` and `RETURNING lease_token`. The render pipeline holds
+  the returned token in memory and registers it in the process-global `_active_tokens[task_id]`
+  so the liveness loop fences heartbeats correctly.
+- **Terminal-write guards** (`_mark_succeeded/_mark_failed/_mark_canceled`) — gain a `token`
+  parameter; when provided, the `UPDATE` adds `WHERE lease_token = :token` alongside the existing
+  `worker_id` guard (R9 defense-in-depth). `token=None` preserves the prior worker_id-only guard
+  (backward compatible for direct unit calls); the real effectful path always passes it.
+- **`recover_lost_tasks` reclaim flip** — adds `lease_token = lease_token + 1` so the preempted
+  owner's subsequent writes are fenced *immediately* (before the new claim even runs).
+- **`refresh_owned_heartbeats`** — gains a `tokens` map; when supplied, each refresh is guarded by
+  `lease_token = :token`, so a reclaimed/stale owner's heartbeat affects 0 rows and it cannot be
+  mistaken for alive. The liveness loop passes `tasks._active_tokens`.
+- **Object-store artifact fence** — `storage.save(task_id, src, lease_token=...)`; S3 records
+  `x-amz-meta-lease-token`, Local ignores it. The authoritative fence lives in
+  **`tasks.fence_artifact`** + the `video_lease_fence` mapping table: a worker's save is accepted
+  only if its `lease_token` is strictly higher than the currently accepted one. The winning
+  token's `storage_key` is recorded; the terminal `_mark_succeeded` (guarded by `worker_id` +
+  `lease_token`) is the final authority pointing `output_path` at the artifact. A stale owner
+  therefore produces no referenced (valid) artifact.
+- **Best-effort early discard (§4.5)** — before `save`, the pipeline re-reads `lease_token` from PG;
+  if it no longer matches the held token, the artifact is discarded and the render aborts without
+  a terminal write. This shrinks the window in which a stale owner could reach storage.
+
+### 9.3 Gaps / residual edges (consistent with R20)
+
+- The preempted owner may still *waste compute* rendering locally; the guarantee is that no valid
+  duplicate terminal state or artifact survives.
+- A fully lost lease (no successful renewal) is itself detected and triggers reclaim; the only
+  residual race is a reclaim landing *after* the stale owner's PG re-read but *before* its
+  `save` — covered by the `video_lease_fence` mapping-table check + terminal-state guard.
+
+### 9.4 Testing
+
+`tests/service/test_ws_c_fencing.py`: stale token terminal-write fence (all three `_mark_*`);
+`fence_artifact` rejects stale/accepts newer token; pipeline discards artifact on reclaim (Redis
+flap); stale heartbeat rejected. Plus updated `test_phase1_statemachine` (claim tuple) and
+`test_worker` (QUEUED dispatch + `storage_for_kind` patch). Full suite green target.

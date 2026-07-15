@@ -4,7 +4,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, Integer, String, Text, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Enum, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -76,6 +76,16 @@ class VideoTask(Base):
     # backfilled rows scoped to `system`.
     tenant_id: Mapped[str] = mapped_column(
         String(64), nullable=False, default="system", server_default="system", index=True
+    )
+
+    # --- Strict lease / fencing token (Phase 3, WS-C / R20) ---
+    # Denotes *task execution ownership*. Bumped ONLY on an ownership transfer
+    # (first claim, or reclaim after the owner is declared dead) — never on the
+    # same owner's local/Activity retry. A stale holder's terminal writes and
+    # artifact writes are fenced by this token (R20). NOT NULL + DEFAULT 0 so
+    # the first claim's `lease_token = lease_token + 1` yields 1 (no NULL+1).
+    lease_token: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
     )
 
 
@@ -155,3 +165,31 @@ class AuditLog(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     meta_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+# ---------------------------------------------------------------------------
+# Strict-lease artifact fence (Phase 3, WS-C / R20)
+# ---------------------------------------------------------------------------
+
+
+class VideoLeaseFence(Base):
+    """Authoritative record of which lease token's artifact won for a task.
+
+    The object-storage write is the *primary* new guarantee of R20: a stale
+    owner must not produce a valid artifact. When a worker finishes rendering
+    it calls :func:`app.workers.tasks.fence_artifact`, which accepts the write
+    only if its ``lease_token`` is strictly higher than the currently accepted
+    one. The winning token's ``storage_key`` is recorded here, and the terminal
+    ``_mark_succeeded`` (guarded by ``worker_id`` + ``lease_token``) is the
+    final authority that points ``output_path`` at the artifact. A stale owner
+    therefore produces no referenced (valid) artifact even if it briefly writes
+    to storage.
+    """
+
+    __tablename__ = "video_lease_fence"
+
+    task_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    accepted_token: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+    storage_key: Mapped[str | None] = mapped_column(String(512), nullable=True)

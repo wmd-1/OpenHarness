@@ -61,15 +61,19 @@
 
 ## Phase 4: WS-C Strict Lease + Fencing
 
-- [ ] 4.1 Migration `005_lease_token.sql`：`video_tasks` 加 `lease_token bigint`（默认 0）
-- [ ] 4.2 `tasks.py`：`claim`/`reclaim` 原子自增 `lease_token` 并经 `RETURNING` 把新 token 交回调用方（`claim()` 改为返回 `(claimed, token)`，worker 内存持有当前 token）
-- [ ] 4.3 `_mark_succeeded` / `_mark_failed` / `_mark_canceled` 三个终态写守卫统一升级为 `WHERE worker_id=:wid AND lease_token=:token`（旧 token → 0 行；DB 层为防御纵深，真实新增保证在 S3 写 fence，见 R20）
-- [ ] 4.4 `storage/s3.py`：`save` 写入 `x-amz-meta-lease-token`；经中间映射表比对拒绝旧 token 产物
-- [ ] 4.5 worker 在重渲染前 / `save` 前从 PG 重读当前 `lease_token` 与内存 token 比对，stale 则提前中止渲染 / 丢弃产物（**不引入** Redis `oh:lease:{task_id}` TTL，fence 以 PG token 为准；与 §9 一致）
-- [ ] 4.6 `test_ws_c_fencing.py`：旧 token 写终态/S3 被 fence；Redis 抖动下无有效双产物
+> 目标：把 Phase 2「owner 走失后旧 owner 仍可能写终态/产物」的残余风险（§11.7）升级为**严格 lease**：每个 `claim`/`reclaim` 原子自增 `lease_token`，worker 内存持有当前 token 并带在每次 effectful 写与对象存储写上，旧 token 的写被 fence。设计见 [`design.md`](design.md) §9。
+
+- [x] 4.1 Migration `006_lease_token.py`（Python Alembic，`down_revision=005_rls`）：`video_tasks` 加 `lease_token BIGINT NOT NULL DEFAULT 0`；新增映射表 `video_lease_fence`（权威记录各 task 哪一 token 的产物为有效，R20 主 artifact fence）
+- [x] 4.2 `tasks.py`：`claim()` 改为返回 `(claimed, token)`，原子自增 `lease_token` 并经 `RETURNING` 交回新 token（首 claim→1）；worker 进程用模块级 `_active_tokens` 持有当前 token；`recover_lost_tasks` 的 reclaim flip 同步 `lease_token = lease_token + 1`（立即 fence 旧 owner）
+- [x] 4.3 `_mark_succeeded` / `_mark_failed` / `_mark_canceled` 三个终态写守卫统一升级：当传入 `token` 时追加 `WHERE lease_token=:token`（旧 token → 0 行，DB 层防御纵深）；`token=None` 保留原 `worker_id` 守卫以兼容直接单测
+- [x] 4.4 `storage/base|local|s3.py`：`save(task_id, src, lease_token=0)`；`S3VideoStorage.save` 写入 `x-amz-meta-lease-token`；新增 `fence_artifact(task_id, token, key)` 经 `video_lease_fence` 比对，仅当 token 严格更高才接受，旧 token 产物丢弃（R20 主保证）
+- [x] 4.5 `render_pipeline.execute_video_render`：claim 后持有 token；`save` 前从 PG 重读 `lease_token` 与内存 token 比对，stale 则提前丢弃产物并中止渲染（不引入 Redis TTL，fence 以 PG token 为准，与 §9 一致）；`storage_for_kind(task.storage_kind)` 让 S3 路径同样被 fence
+- [x] 4.6 `test_ws_c_fencing.py`：旧 token 写终态被 fence（三个 `_mark_*`）；`fence_artifact` 拒绝旧 token；Redis 抖动下重渲染中途 reclaim → pipeline 丢弃产物、无有效双产物；stale owner 的 heartbeat 被拒
 
 **Quality Gate:**
-- [ ] fencing 用例全绿；Phase 1/2 回归不退化
+- [x] fencing 用例全绿；Phase 1/2 回归不退化（`pytest tests/service` → **108 passed**，oh-e2e:latest，sqlite + fakeredis）
+- [x] `video_lease_fence` 并发写竞争（双 owner 同时到达 fence）由 `_mark_succeeded` 的 `worker_id+lease_token` 守卫兜底（最高 token 才是 output_path 指向者）；`test_ws_c_fencing::test_terminal_write_fenced_by_stale_token` 覆盖
+- [ ] 真实多副本 + reclaim 端到端（PG 行锁 + Redis registry）需 Docker daemon，同 Phase 2/3 约定 DEFERRED，由 docker compose + CI 校验
 
 ---
 

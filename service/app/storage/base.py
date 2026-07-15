@@ -8,12 +8,15 @@ from typing import BinaryIO, Protocol, runtime_checkable
 class VideoStorage(Protocol):
     """Abstract interface for video file storage backends."""
 
-    def save(self, task_id: str, src: Path) -> str:
+    def save(self, task_id: str, src: Path, lease_token: int | None = None) -> str:
         """Save a video file and return its storage key.
 
         Args:
             task_id: Unique task identifier.
             src: Local path to the source video file.
+            lease_token: Optional strict-lease token (R20). S3 backends record
+                it as object metadata so a stale owner's artifact is identifiable;
+                the authoritative fence lives in ``app.workers.tasks.fence_artifact``.
 
         Returns:
             Storage key (e.g., ``<task_id>.mp4`` or an S3 object key).

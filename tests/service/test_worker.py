@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import tempfile
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
@@ -43,7 +44,7 @@ def test_happy_path_marks_succeeded(sync_db):
     import tempfile
 
     with Session(sync_db) as s:
-        t = VideoTask(prompt="make a video", status=TaskStatus.RUNNING)
+        t = VideoTask(prompt="make a video", status=TaskStatus.QUEUED)
         s.add(t)
         s.commit()
         tid = str(t.id)
@@ -60,7 +61,7 @@ def test_happy_path_marks_succeeded(sync_db):
         with patch.object(render_pipeline, "run_oh") as m_run, patch.object(
             render_pipeline, "locate_output_file"
         ) as m_locate, patch.object(render_pipeline, "probe_mp4") as m_probe, patch.object(
-            render_pipeline, "LocalVideoStorage"
+            render_pipeline, "storage_for_kind"
         ) as m_storage:
             m_run.return_value = _class_with(
                 exit_code=0, stdout="**输出文件:** `out.mp4`"
@@ -81,7 +82,7 @@ def test_happy_path_marks_succeeded(sync_db):
 
 def test_nonzero_exit_marks_failed(sync_db):
     with Session(sync_db) as s:
-        t = VideoTask(prompt="x", status=TaskStatus.RUNNING)
+        t = VideoTask(prompt="x", status=TaskStatus.QUEUED)
         s.add(t)
         s.commit()
         tid = str(t.id)
@@ -100,14 +101,19 @@ def test_cancel_guard_prevents_overwrite_to_succeeded(sync_db):
     """If the user cancels mid-run, the task must stay CANCELED, never flip to
     SUCCEEDED (the original bug)."""
     with Session(sync_db) as s:
-        t = VideoTask(prompt="x", status=TaskStatus.RUNNING)
+        t = VideoTask(prompt="x", status=TaskStatus.QUEUED)
         s.add(t)
         s.commit()
         tid = str(t.id)
 
     with patch.object(render_pipeline, "run_oh") as m_run, patch.object(
-        worker_tasks, "_abort_requested", return_value=True
-    ):
+        render_pipeline, "storage_for_kind"
+    ) as m_storage, patch.object(worker_tasks, "_abort_requested", return_value=True):
+        m_storage.return_value = LocalVideoStorage(root=Path(tempfile.gettempdir()) / "store_ws_c")
+        m_run.return_value = _class_with(
+            exit_code=0, stdout="**输出文件:** `ghost.mp4`"
+        )
+        worker_tasks.generate_video_task.run(task_id=tid)
         m_run.return_value = _class_with(
             exit_code=0, stdout="**输出文件:** `ghost.mp4`"
         )

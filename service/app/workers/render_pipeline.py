@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models import TaskStatus, VideoTask
-from app.storage.local import LocalVideoStorage
+from app.deps import storage_for_kind
 from app.workers.identity import get_worker_id
 from app.workers.parser import OutputNotFoundError, locate_output_file, probe_mp4
 from app.workers.runner import run_oh
@@ -67,112 +67,138 @@ def execute_video_render(task_id: str, celery_task_id: str | None = None) -> Non
     from app.workers.tasks import (
         TransientError,
         _abort_requested,
+        _active_tokens,
         _append_log,
         _mark_canceled,
         _mark_failed,
         _mark_succeeded,
+        _read_lease_token,
         _redis_client,
         _update_log_tail,
+        claim,
+        fence_artifact,
         render_semaphore as _render_semaphore,
     )
 
     task_id = uuid.UUID(str(task_id))
-    storage = LocalVideoStorage()
+    wid = get_worker_id()
 
-    with _sync_session() as db:
-        task = db.get(VideoTask, task_id)
-        if task is None:
-            logger.error("Task %s not found in DB", task_id)
-            return
-        if task.status == TaskStatus.CANCELED:
-            return
-
-        # Claim ownership of this task for the lifetime of this worker process
-        # (scale-multi-instance R7): the worker_id lets the heartbeat/reclaim
-        # flow tell which replica owns a running task.
-        wid = get_worker_id()
-        task.worker_id = wid
-        task.status = TaskStatus.RUNNING
-        task.started_at = datetime.now(timezone.utc)
-        # Seed heartbeat_at at claim time (scale-multi-instance R7/R8). The
-        # liveness loop refreshes it while the worker is alive; if the worker
-        # dies, this timestamp goes stale and recover_lost_tasks reclaims the
-        # task. Without this, heartbeat_at stays NULL and the reclaim scan's
-        # `heartbeat_at < cutoff` condition can never match -> orphaned tasks.
-        task.heartbeat_at = datetime.now(timezone.utc)
-        if celery_task_id is not None:
-            task.celery_task_id = celery_task_id
-        db.commit()
-
-        prompt = task.prompt
-        timeout = task.timeout_seconds
-        extra_oh_args = json.loads(task.extra_oh_args) if task.extra_oh_args else []
-
-    workspace = Path(settings.workspace_root) / str(task_id)
-    workspace.mkdir(parents=True, exist_ok=True)
-
-    with _sync_session() as db:
-        task = db.get(VideoTask, task_id)
-        if task is not None:
-            task.workspace_path = str(workspace)
-            db.commit()
+    # Claim ownership for this worker process (scale-multi-instance R7) and
+    # capture the strict-lease token we now hold (WS-C / R20). The token is
+    # bumped atomically by the claim and must travel with every effectful write
+    # so a reclaimed/stale owner's writes are fenced.
+    claimed, token = claim(task_id, wid, celery_task_id=celery_task_id)
+    if not claimed:
+        logger.warning("Task %s already claimed by another worker; skipping", task_id)
+        return
+    _active_tokens[str(task_id)] = token
 
     try:
-        # Track an in-flight render so Grafana can see per-replica concurrency
-        # (Phase 5 / R8). The per-process semaphore caps concurrent oh processes.
-        with render_inflight():
-            with _render_semaphore:
-                result = run_oh(
-                    prompt=prompt,
-                    cwd=workspace,
-                    timeout=timeout,
-                    on_log_line=lambda line: _append_log(task_id, line),
-                    extra_args=extra_oh_args,
-                    is_aborted=lambda: _abort_requested(task_id),
-                    oh_bin=settings.oh_bin,
-                    headless_shell_path=settings.headless_shell_path,
-                )
+        with _sync_session() as db:
+            task = db.get(VideoTask, task_id)
+            if task is None:
+                logger.error("Task %s not found in DB after claim", task_id)
+                return
+            if task.status == TaskStatus.CANCELED:
+                return
 
-        # Guard: if the user canceled while running, do NOT overwrite the
-        # status back to SUCCEEDED/FAILED. The worker is authoritative here.
-        if _abort_requested(task_id):
-            _mark_canceled(task_id, RuntimeError("canceled by user"), worker_id=wid)
-            return
+            prompt = task.prompt
+            timeout = task.timeout_seconds
+            extra_oh_args = json.loads(task.extra_oh_args) if task.extra_oh_args else []
+            storage_kind = task.storage_kind
 
-        _update_log_tail(task_id)
+        workspace = Path(settings.workspace_root) / str(task_id)
+        workspace.mkdir(parents=True, exist_ok=True)
 
-        if result.exit_code != 0:
-            _mark_failed(
-                task_id,
-                RuntimeError(f"oh exited with code {result.exit_code}"),
-                exit_code=result.exit_code,
-                worker_id=wid,
-            )
-            return
+        with _sync_session() as db:
+            task = db.get(VideoTask, task_id)
+            if task is not None:
+                task.workspace_path = str(workspace)
+                db.commit()
 
-        mp4 = locate_output_file(result.stdout, workspace)
-        meta = probe_mp4(mp4)
-        final_key = storage.save(task_id, mp4)
-        _mark_succeeded(task_id, final_key, meta, result, worker_id=wid)
-
-        # Publish done marker into the log stream (consumed by SSE).
         try:
-            _redis_client().xadd(f"oh:logs:{task_id}", {"line": "__DONE__"})
-        except Exception:
-            logger.warning("Failed to publish done marker for task %s", task_id)
+            # Track an in-flight render so Grafana can see per-replica concurrency
+            # (Phase 5 / R8). The per-process semaphore caps concurrent oh processes.
+            with render_inflight():
+                with _render_semaphore:
+                    result = run_oh(
+                        prompt=prompt,
+                        cwd=workspace,
+                        timeout=timeout,
+                        on_log_line=lambda line: _append_log(task_id, line),
+                        extra_args=extra_oh_args,
+                        is_aborted=lambda: _abort_requested(task_id),
+                        oh_bin=settings.oh_bin,
+                        headless_shell_path=settings.headless_shell_path,
+                    )
 
-    except OutputNotFoundError as exc:
-        # Deterministic failure — record and stop (do NOT re-raise, so the
-        # message is acked rather than infinitely redelivered).
-        _update_log_tail(task_id)
-        _mark_failed(task_id, exc, worker_id=wid)
-    except TransientError:
-        # Transient infrastructure errors must propagate so the Celery task's
-        # autoretry_for retries them. (Temporal path relies on the activity
-        # retry_policy instead — it re-raises the same way.)
-        raise
-    except Exception as exc:
-        # Deterministic failure — record and stop (no re-raise).
-        _update_log_tail(task_id)
-        _mark_failed(task_id, exc, worker_id=wid)
-        return
+            # Guard: if the user canceled while running, do NOT overwrite the
+            # status back to SUCCEEDED/FAILED. The worker is authoritative here.
+            if _abort_requested(task_id):
+                _mark_canceled(task_id, RuntimeError("canceled by user"), worker_id=wid, token=token)
+                return
+
+            _update_log_tail(task_id)
+
+            if result.exit_code != 0:
+                _mark_failed(
+                    task_id,
+                    RuntimeError(f"oh exited with code {result.exit_code}"),
+                    exit_code=result.exit_code,
+                    worker_id=wid,
+                    token=token,
+                )
+                return
+
+            mp4 = locate_output_file(result.stdout, workspace)
+            meta = probe_mp4(mp4)
+
+            # Best-effort fence (R20 §4.5): if we were reclaimed while rendering,
+            # our held token no longer matches the DB row. Abandon the artifact
+            # rather than producing a stale, valid side effect. The authoritative
+            # artifact fence below is the backstop for the race window.
+            if _read_lease_token(task_id) != token:
+                logger.warning(
+                    "Task %s reclaimed during render (db token != held %s); discarding artifact",
+                    task_id,
+                    token,
+                )
+                return
+
+            storage = storage_for_kind(storage_kind)
+            final_key = storage.save(task_id, mp4, lease_token=token)
+
+            # Primary artifact fence (R20): only accept the write if our token is
+            # the strictly highest seen. A stale owner's artifact is discarded.
+            if not fence_artifact(task_id, token, final_key):
+                logger.warning("Task %s artifact fenced (stale token %s); discarding", task_id, token)
+                return
+
+            if _mark_succeeded(task_id, final_key, meta, result, worker_id=wid, token=token):
+                # Publish done marker into the log stream (consumed by SSE).
+                try:
+                    _redis_client().xadd(f"oh:logs:{task_id}", {"line": "__DONE__"})
+                except Exception:
+                    logger.warning("Failed to publish done marker for task %s", task_id)
+            else:
+                logger.warning("Task %s terminal write fenced (stale token %s)", task_id, token)
+
+        except OutputNotFoundError as exc:
+            # Deterministic failure — record and stop (do NOT re-raise, so the
+            # message is acked rather than infinitely redelivered).
+            _update_log_tail(task_id)
+            _mark_failed(task_id, exc, worker_id=wid, token=token)
+        except TransientError:
+            # Transient infrastructure errors must propagate so the Celery task's
+            # autoretry_for retries them. (Temporal path relies on the activity
+            # retry_policy instead — it re-raises the same way.)
+            raise
+        except Exception as exc:
+            # Deterministic failure — record and stop (no re-raise).
+            _update_log_tail(task_id)
+            _mark_failed(task_id, exc, worker_id=wid, token=token)
+            return
+    finally:
+        # Always drop our token registration so the liveness loop stops
+        # refreshing (and cannot falsely keep alive) a finished/reclaimed task.
+        _active_tokens.pop(str(task_id), None)
