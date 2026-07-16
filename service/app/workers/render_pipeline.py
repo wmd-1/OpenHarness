@@ -48,7 +48,11 @@ def _sync_session() -> Session:
     return Session(engine)
 
 
-def execute_video_render(task_id: str, celery_task_id: str | None = None) -> None:
+def execute_video_render(
+    task_id: str,
+    celery_task_id: str | None = None,
+    reclaim_from_crash: bool = False,
+) -> None:
     """Run the full render pipeline for ``task_id`` and persist results.
 
     This is the single implementation shared by the Celery task and the Temporal
@@ -77,11 +81,20 @@ def execute_video_render(task_id: str, celery_task_id: str | None = None) -> Non
         _update_log_tail,
         claim,
         fence_artifact,
+        _reset_for_reclaim,
         render_semaphore as _render_semaphore,
     )
 
     task_id = uuid.UUID(str(task_id))
     wid = get_worker_id()
+
+    # On a Temporal activity retry (attempt > 1) the previous worker crashed
+    # mid-render, leaving the row RUNNING owned by a dead worker. Reset it so
+    # this attempt can claim a fresh lease. Temporal owns retries, so there is
+    # no Celery beat to do this — the Celery path never sets this flag (beat
+    # already reset the row before re-enqueueing).
+    if reclaim_from_crash:
+        _reset_for_reclaim(task_id)
 
     # Claim ownership for this worker process (scale-multi-instance R7) and
     # capture the strict-lease token we now hold (WS-C / R20). The token is

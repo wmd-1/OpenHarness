@@ -60,6 +60,9 @@ async def video_generation_activity(task_id: str) -> None:
     the public ``activity.heartbeat`` every 10s, so a dead/hung worker is
     detected within ``heartbeat_timeout`` and the activity is retried.
     """
+    # 1-based; > 1 means this is a Temporal retry after a worker crash.
+    attempt = activity.info().attempt
+
     async def _heartbeat_loop() -> None:
         while True:
             await asyncio.sleep(10)
@@ -71,7 +74,13 @@ async def video_generation_activity(task_id: str) -> None:
         # render_pipeline (subprocess / filesystem) out of the Temporal
         # workflow sandbox, which otherwise fails validation.
         from app.workers.render_pipeline import execute_video_render
-        await asyncio.to_thread(execute_video_render, task_id)
+
+        # On an activity retry (attempt > 1) the previous worker crashed
+        # mid-render; reset the task so this attempt can reclaim a fresh
+        # lease (see _reset_for_reclaim / execute_video_render).
+        await asyncio.to_thread(
+            execute_video_render, task_id, reclaim_from_crash=(attempt > 1)
+        )
     finally:
         hb.cancel()
         with contextlib.suppress(asyncio.CancelledError):

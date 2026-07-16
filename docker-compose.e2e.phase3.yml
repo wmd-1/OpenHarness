@@ -241,6 +241,28 @@ services:
       temporal:
         condition: service_started
 
+  temporal-worker2:
+    image: oh-e2e-phase3:latest
+    pull_policy: never
+    container_name: "${E2E_PROJECT:-e2ephase3}-temporal-worker2"
+    environment:
+      <<: *common-env
+      OH_ROLE: temporal-worker
+      OH_WORKER_ID: temporal-worker2
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      createbuckets:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+      temporal:
+        condition: service_started
+
 volumes:
   oh-pg:
   oh-minio:

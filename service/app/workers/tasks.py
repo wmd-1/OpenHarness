@@ -137,6 +137,38 @@ def claim(task_id: uuid.UUID, worker_id: str, celery_task_id: str | None = None)
         return (True, row[0])
 
 
+def _reset_for_reclaim(task_id: uuid.UUID) -> int:
+    """Reset a crashed/retrying task so a fresh claim can take ownership.
+
+    Used by the Temporal backend on an activity retry (attempt > 1). Temporal
+    owns retries (there is no Celery beat), so when the previous worker died
+    mid-render the row is left ``RUNNING`` owned by a now-dead worker. Flip it
+    back to ``RETRYING``, clear the owner, and bump the ``lease_token`` so the
+    surviving worker's subsequent ``claim`` establishes a new, strictly-higher
+    fence token (WS-C / R20). Returns the new token (``0`` if nothing matched,
+    e.g. the task already reached a terminal state and the retry is a no-op).
+    """
+    task_id = uuid.UUID(str(task_id))
+    with _sync_session() as db:
+        result = db.execute(
+            sa_update(VideoTask)
+            .where(
+                VideoTask.id == task_id,
+                VideoTask.status.in_([TaskStatus.RUNNING, TaskStatus.RETRYING]),
+            )
+            .values(
+                status=TaskStatus.RETRYING,
+                worker_id=None,
+                heartbeat_at=None,
+                lease_token=VideoTask.lease_token + 1,
+            )
+            .returning(VideoTask.lease_token)
+        )
+        row = result.fetchone()
+        db.commit()
+        return row[0] if row else 0
+
+
 def _mark_succeeded(
     task_id: str,
     storage_key: str,

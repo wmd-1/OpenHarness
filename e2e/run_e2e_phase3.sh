@@ -14,10 +14,11 @@
 # The same assertions are run under BOTH scheduler backends ("double run"):
 #   * celery   - full crash+fencing (kill a worker, beat reclaims, a peer
 #                re-claims the task and finishes it with a fenced token)
-#   * temporal  - isolation + happy-path fencing. The crash+fencing path under
-#                 Temporal is blocked by a known reclaim gap (see README sec. 3);
-#                 the happy path still proves the fence wiring records exactly
-#                 one winning token under the Temporal backend.
+#   * temporal  - identical crash+fencing: Temporal's Activity retry (driven by
+#                 heartbeat_timeout + RetryPolicy) reclaims the killed worker's
+#                 task on a surviving temporal-worker; _reset_for_reclaim bumps
+#                 the fence token so the survivor finishes with a fenced token.
+#                 (See README sec. 3 for the reclaim semantics.)
 #
 # Usage:  bash e2e/run_e2e_phase3.sh
 set -u
@@ -45,9 +46,11 @@ dump_diag() {
   local id="${1:-}"
   log "--- diag dump (task=$id) ---"
   [ -n "$id" ] && log "status=$(task_status "$id") worker=$(task_worker "$id") token=$(task_token "$id")"
-  for svc in worker1 worker2 beat temporal-worker api1; do
-    log "### $svc logs (tail 25) ###"
-    docker logs --tail 25 "${PROJECT}-$svc" 2>&1 | tee -a "$REPORT" | sed 's/^/    /'
+  for svc in worker1 worker2 beat temporal-worker temporal-worker2 api1; do
+    if docker ps -a --format '{{.Names}}' | grep -qx "${PROJECT}-$svc"; then
+      log "### $svc logs (tail 25) ###"
+      docker logs --tail 25 "${PROJECT}-$svc" 2>&1 | tee -a "$REPORT" | sed 's/^/    /'
+    fi
   done
 }
 
@@ -125,17 +128,21 @@ assert_isolation() {
 }
 
 # Celery only: kill the owning worker, let beat reclaim + a peer re-claim.
-assert_fencing_crash() {
-  log "--- lease fencing / reclaim (celery) ---"
-  local TA fence_cnt ctok fTok fKey out
-  TA=$(submit "$ALPHA_KEY" "fencing-celery task")
+assert_fencing_crash() { # backend
+  local backend="$1"
+  log "--- lease fencing / reclaim ($backend) ---"
+  local TA fence_cnt ctok fTok fKey out reclaimer
+  reclaim_method() { # backend -> human-readable reclaim trigger
+    [ "$1" = "temporal" ] && echo "Temporal activity retry" || echo "Celery beat reclaim"
+  }
+  TA=$(submit "$ALPHA_KEY" "fencing-$backend task")
   [ -z "$TA" ] && { bad "fencing: submit returned no task_id"; dump_diag "$TA"; return 1; }
   wait_claimed "$TA" 150 || { bad "fencing: task never claimed"; dump_diag "$TA"; return 1; }
   log "fencing: task $TA claimed by $WORKER (token $(task_token "$TA"))"
   docker kill "${PROJECT}-$WORKER" >/dev/null 2>&1
-  log "fencing: killed $WORKER; awaiting beat reclaim + peer re-claim"
+  log "fencing: killed $WORKER; awaiting $(reclaim_method "$backend") + peer re-claim"
   wait_db_status "$TA" succeeded 300 || { bad "fencing: task never succeeded after reclaim"; dump_diag "$TA"; return 1; }
-  ok "fencing: task succeeded after worker crash + reclaim (celery)"
+  ok "fencing: task succeeded after worker crash + reclaim ($backend)"
 
   fence_cnt=$(db_query "SELECT count(*) FROM video_lease_fence WHERE task_id='$TA';")
   ctok=$(task_token "$TA")
@@ -147,26 +154,9 @@ assert_fencing_crash() {
   check "fence storage_key == task.output_path"          "$([ -n "$out" ] && [ "$fKey" = "$out" ] && echo 0 || echo 1)"
 }
 
-# Temporal (and the celery happy-path equivalent): no crash; assert the fence
-# wiring still records exactly one winning token on success.
-assert_fencing_happy() { # backend label
-  local backend="$1"
-  log "--- lease fencing (happy path, $backend) ---"
-  local TA fence_cnt ctok fTok fKey out
-  TA=$(submit "$ALPHA_KEY" "fencing-$backend task")
-  [ -z "$TA" ] && { bad "fencing: submit returned no task_id"; dump_diag "$TA"; return 1; }
-  wait_db_status "$TA" succeeded 300 || { bad "fencing: task never succeeded ($backend)"; dump_diag "$TA"; return 1; }
-  ok "fencing: task succeeded ($backend)"
-
-  fence_cnt=$(db_query "SELECT count(*) FROM video_lease_fence WHERE task_id='$TA';")
-  ctok=$(task_token "$TA")
-  fTok=$(db_query "SELECT accepted_token FROM video_lease_fence WHERE task_id='$TA';")
-  fKey=$(db_query "SELECT storage_key FROM video_lease_fence WHERE task_id='$TA';")
-  out=$(db_query "SELECT output_path FROM video_tasks WHERE id='$TA';")
-  check "fence table has exactly one accepted artifact" "$([ "$fence_cnt" = "1" ] && echo 0 || echo 1)"
-  check "fence accepted_token == task.lease_token"       "$([ "$fTok" = "$ctok" ] && echo 0 || echo 1)"
-  check "fence storage_key == task.output_path"          "$([ -n "$out" ] && [ "$fKey" = "$out" ] && echo 0 || echo 1)"
-}
+# Both backends now run the real crash+fencing scenario via assert_fencing_crash
+# (see orchestration): kill the claiming worker, let the surviving replica reclaim
+# (Celery beat / Temporal activity retry) and finish with a fenced token.
 
 # --- orchestration ---------------------------------------------------------
 up_infra() {
@@ -197,18 +187,17 @@ run_backend() { # backend
       docker exec "${PROJECT}-temporal" temporal operator namespace list --address temporal:7233 >/dev/null 2>&1 && break
       sleep 3; t=$((t+3))
     done
-    $COMPOSE up -d api1 api2 temporal-worker 2>&1 | tail -3
+    $COMPOSE up -d api1 api2 temporal-worker temporal-worker2 2>&1 | tail -3
   else
     $COMPOSE up -d api1 api2 worker1 worker2 beat 2>&1 | tail -3
   fi
   wait_health 180 || { bad "$backend: api never healthy"; $COMPOSE down >/dev/null 2>&1; return 1; }
   sleep 2
   assert_isolation
-  if [ "$backend" = "temporal" ]; then
-    assert_fencing_happy temporal
-  else
-    assert_fencing_crash
-  fi
+  # Both backends run the REAL crash+fencing scenario: kill the worker that
+  # claimed the task and let the surviving replica reclaim it (Celery via beat,
+  # Temporal via activity retry) and finish with a fenced token.
+  assert_fencing_crash "$backend"
   $COMPOSE down >/dev/null 2>&1
 }
 
