@@ -13,9 +13,13 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.audit import record_audit
 from app.config import settings
 from app.deps import get_db, get_storage, storage_for_kind
 from app.models import TaskStatus, VideoTask
+from app.quota import check_quota
+from app.ratelimit import rate_limit
+from app.tenant_ctx import get_current_tenant
 from app.schemas import (
     TaskLinks,
     VideoCreateRequest,
@@ -82,8 +86,15 @@ def _set_abort_flag(task_id: uuid.UUID) -> None:
         pass
 
 
-async def _get_task_or_404(task_id: uuid.UUID, db: AsyncSession) -> VideoTask:
-    task = await db.get(VideoTask, task_id)
+async def _get_task_or_404(
+    task_id: uuid.UUID, db: AsyncSession, tenant_id: str | None = None
+) -> VideoTask:
+    stmt = select(VideoTask).where(VideoTask.id == task_id)
+    # The `system` tenant is the trusted internal scope and may read any task
+    # (RLS exempts it as well); ordinary tenants are restricted to their own rows.
+    if tenant_id is not None and tenant_id != "system":
+        stmt = stmt.where(VideoTask.tenant_id == tenant_id)
+    task = (await db.execute(stmt)).scalar_one_or_none()
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     return task
@@ -96,8 +107,14 @@ async def _get_task_or_404(task_id: uuid.UUID, db: AsyncSession) -> VideoTask:
 async def create_video(
     body: VideoCreateRequest,
     db: AsyncSession = Depends(get_db),
+    _rl: None = Depends(rate_limit),
 ) -> VideoCreateResponse:
-    """Submit a new video generation task."""
+    """Submit a new video generation task.
+
+    Enforces, in order: per-tenant rate limit (``rate_limit`` dependency),
+    per-tenant quota (``check_quota``), then persists the task and writes an
+    audit entry. The trusted ``system`` tenant is exempt from rate/quota.
+    """
     # Idempotency check
     if body.idempotency_key is not None:
         stmt = select(VideoTask).where(VideoTask.idempotency_key == body.idempotency_key)
@@ -110,6 +127,10 @@ async def create_video(
                 links=_task_links(existing.id),
             )
 
+    # Quota: block the submit before we persist anything (system is exempt).
+    tenant_id = get_current_tenant() or "system"
+    await check_quota(tenant_id, db)
+
     task = VideoTask(
         prompt=body.prompt,
         skill="hyperframes",
@@ -118,9 +139,23 @@ async def create_video(
         extra_oh_args=json.dumps(body.extra_oh_args) if body.extra_oh_args else None,
         idempotency_key=body.idempotency_key,
         storage_kind=settings.storage_kind,
+        tenant_id=tenant_id,
     )
     try:
         db.add(task)
+        # Flush so the server-generated id is assigned before we reference it
+        # in the audit entry (the Python-side uuid default is applied at flush
+        # time, so task.id is None until then — otherwise the audit row would
+        # capture target_id="None").
+        await db.flush()
+        # Audit the create alongside the task so both commit atomically.
+        await record_audit(
+            db,
+            "video.create",
+            tenant_id=tenant_id,
+            target_type="video_task",
+            target_id=str(task.id),
+        )
         await db.commit()
         await db.refresh(task)
     except IntegrityError:
@@ -145,8 +180,9 @@ async def create_video(
         raise
 
     # Enqueue render via the configured scheduler (Phase 6). Priority drives
-    # the queue tier (high/normal/low) for Phase 7 priority consumption.
-    get_scheduler().enqueue(str(task.id), priority=task.priority)
+    # the queue tier (high/normal/low) for Phase 7 priority consumption. The
+    # scheduler's enqueue/cancel are async (WS-B supports the Temporal backend).
+    await get_scheduler().enqueue(str(task.id), priority=task.priority)
 
     return VideoCreateResponse(
         task_id=task.id,
@@ -161,7 +197,7 @@ async def get_video(
     db: AsyncSession = Depends(get_db),
 ) -> VideoTaskResponse:
     """Return details for a specific task."""
-    task = await _get_task_or_404(task_id, db)
+    task = await _get_task_or_404(task_id, db, get_current_tenant())
     return _to_response(task)
 
 
@@ -198,7 +234,7 @@ async def download_video(
     presigned URL is available — it streams the bytes directly (backward
     compatible with the single-instance behavior).
     """
-    task = await _get_task_or_404(task_id, db)
+    task = await _get_task_or_404(task_id, db, get_current_tenant())
     if task.status != TaskStatus.SUCCEEDED:
         raise HTTPException(
             status_code=409,
@@ -250,7 +286,12 @@ async def download_video(
 
 
 @router.get("/{task_id}/events")
-async def video_events(task_id: uuid.UUID):
+async def video_events(
+    task_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    # Enforce tenant isolation even on the SSE stream.
+    await _get_task_or_404(task_id, db, get_current_tenant())
     """SSE endpoint for real-time task progress updates.
 
     Backed by a Redis Stream (``oh:logs:<id>``): a single cursor replays
@@ -321,7 +362,7 @@ async def delete_video(
     storage: VideoStorage = Depends(get_storage),
 ) -> VideoDeleteResponse:
     """Cancel a queued task or delete a completed one."""
-    task = await _get_task_or_404(task_id, db)
+    task = await _get_task_or_404(task_id, db, get_current_tenant())
 
     if task.status == TaskStatus.QUEUED:
         # Revoke Celery task if it hasn't started
@@ -331,6 +372,13 @@ async def delete_video(
         task.status = TaskStatus.CANCELED
         task.cancellation_requested = True
         _set_abort_flag(task.id)
+        await record_audit(
+            db,
+            "video.cancel",
+            tenant_id=get_current_tenant() or "system",
+            target_type="video_task",
+            target_id=str(task.id),
+        )
         await db.commit()
         return VideoDeleteResponse(
             task_id=task.id,
@@ -350,6 +398,13 @@ async def delete_video(
         # blips and is readable by any replica that later owns the task.
         task.status = TaskStatus.CANCELED
         task.cancellation_requested = True
+        await record_audit(
+            db,
+            "video.cancel",
+            tenant_id=get_current_tenant() or "system",
+            target_type="video_task",
+            target_id=str(task.id),
+        )
         await db.commit()
         return VideoDeleteResponse(
             task_id=task.id,
@@ -372,6 +427,13 @@ async def delete_video(
 
     task.status = TaskStatus.CANCELED
     task.output_path = None
+    await record_audit(
+        db,
+        "video.delete",
+        tenant_id=get_current_tenant() or "system",
+        target_type="video_task",
+        target_id=str(task.id),
+    )
     await db.commit()
 
     return VideoDeleteResponse(

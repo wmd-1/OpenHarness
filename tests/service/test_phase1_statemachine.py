@@ -36,15 +36,19 @@ def test_claim_only_one_worker_wins():
             s.add(VideoTask(id=tid, prompt="x", status=TaskStatus.QUEUED))
             s.commit()
 
-        assert worker_tasks.claim(tid, "worker-A") is True
+        # claim() now returns (claimed, lease_token); first claim yields token 1.
+        claimed, token = worker_tasks.claim(tid, "worker-A")
+        assert claimed is True
+        assert token == 1
         # A second claim by a different worker must not win (already RUNNING).
-        assert worker_tasks.claim(tid, "worker-B") is False
+        assert worker_tasks.claim(tid, "worker-B")[0] is False
 
         with Session(eng) as s:
             got = s.get(VideoTask, tid)
             assert got.status == TaskStatus.RUNNING
             assert got.worker_id == "worker-A"
             assert got.attempt == 1
+            assert got.lease_token == 1
     finally:
         worker_tasks._sync_engine = None
         eng.dispose()
@@ -65,7 +69,7 @@ def test_claim_rejects_non_queued_task():
             )
             s.commit()
         # A running task must not be re-claimed by another worker.
-        assert worker_tasks.claim(tid, "worker-B") is False
+        assert worker_tasks.claim(tid, "worker-B")[0] is False
     finally:
         worker_tasks._sync_engine = None
         eng.dispose()
@@ -86,7 +90,7 @@ def test_claim_is_atomic_under_concurrent_workers():
 
         def contender(wid: str):
             barrier.wait()
-            wins.append((wid, worker_tasks.claim(tid, wid)))
+            wins.append((wid, worker_tasks.claim(tid, wid)[0]))
 
         t1 = threading.Thread(target=contender, args=("worker-A",))
         t2 = threading.Thread(target=contender, args=("worker-B",))

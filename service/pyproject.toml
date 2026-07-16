@@ -22,6 +22,15 @@ dependencies = [
     # --- scale-multi-instance Phase 3: S3-compatible object storage ---
     "boto3>=1.34.0,<2",
     "botocore>=1.34.0,<2",
+    # --- Phase 3 (WS-A): per-tenant rate limiting ---
+    # `limits` is the async-safe rate-limiting engine (the same one `slowapi`
+    # wraps) used for the Redis/memory-backed per-tenant submit limiter.
+    "limits>=3.0.0,<4",
+    # --- Phase 3 (WS-B): optional Temporal scheduler backend ---
+    # Only needed when OH_SCHEDULER_BACKEND=temporal. Pinned to 1.x (current
+    # stable async SDK). The Celery path does NOT import temporalio at runtime.
+    "temporalio>=1.5.0,<2",
+
     # --- Phase 4: observability (metrics / traces / structured logs) ---
     # NOTE: tracing (OpenTelemetry) is OPTIONAL + defensive — if these packages
     # are missing the service still boots with OTLP off (see observability/tracing.py).

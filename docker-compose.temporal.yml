@@ -1,0 +1,97 @@
+# ============================================================================
+# OpenHarness — Temporal scheduler stack (WS-B, optional)
+# ============================================================================
+# Usage (merged with the base compose):
+#   docker compose -f docker-compose.yml -f docker-compose.temporal.yml up
+#
+# This brings up a real temporal-server + UI and switches the API + a dedicated
+# temporal-worker process to OH_SCHEDULER_BACKEND=temporal. The Celery broker
+# (redis) is still required for the cross-replica abort key; the Celery worker
+# is NOT started in this stack (the temporal-worker owns execution).
+#
+# The Temporal SDK connects via OH_TEMPORAL_HOST (default localhost:7233).
+# ============================================================================
+
+services:
+  # ---- Temporal server (sqlite backend, dev/demo) ----
+  temporal:
+    image: temporalio/auto-setup:latest
+    container_name: openharness-temporal
+    ports:
+      - "7233:7233"
+    healthcheck:
+      test: ["CMD", "temporal", "operator", "namespace", "describe", "default"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ---- Temporal Web UI ----
+  temporal-ui:
+    image: temporalio/ui:latest
+    container_name: openharness-temporal-ui
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_NAMESPACE=default
+    ports:
+      - "8088:8088"
+    depends_on:
+      temporal:
+        condition: service_healthy
+
+  # ---- Temporal worker (runs VideoGenWorkflow / VideoGenerationActivity) ----
+  temporal-worker:
+    extends: openharness
+    container_name: openharness-temporal-worker
+    entrypoint: ["python", "-m", "app.workers.temporal_worker"]
+    depends_on:
+      temporal:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - OH_DB_URL=postgresql+asyncpg://oh:oh@postgres:5432/oh
+      - OH_DB_SYNC_URL=postgresql+psycopg://oh:oh@postgres:5432/oh
+      - OH_BROKER_URL=redis://redis:6379/0
+      - OH_SCHEDULER_BACKEND=temporal
+      - OH_TEMPORAL_HOST=temporal:7233
+      - OH_TEMPORAL_NAMESPACE=default
+      - OH_TEMPORAL_TASK_QUEUE=video-gen
+      - OH_VIDEO_DIR=/var/openharness/videos
+      - OH_WORKSPACE_ROOT=/workspaces
+      - PRODUCER_HEADLESS_SHELL_PATH=/opt/chrome-headless-shell-linux64/chrome-headless-shell
+      - CHROME_HEADLESS_BIN=/opt/chrome-headless-shell-linux64/chrome-headless-shell
+      - OPENHARNESS_PERMISSION_MODE=full_auto
+      - HYPERFRAMES_AUTO_UPDATE=false
+      - HYPERFRAMES_NO_AUTO_INSTALL=1
+      - HYPERFRAMES_NO_UPDATE_CHECK=1
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - QWENTTS_URL=${QWENTTS_URL:-}
+      - QWENTTS_MODE=${QWENTTS_MODE:-speech}
+      - QWENTTS_MODEL=${QWENTTS_MODEL:-}
+      - QWENTTS_VOICE=${QWENTTS_VOICE:-}
+      - QWENTTS_INSTRUCTIONS=${QWENTTS_INSTRUCTIONS:-}
+    volumes:
+      - ./src:/app/src
+      - ./ohmo:/app/ohmo
+      - ./service:/opt/oh-service
+      - oh-videos:/var/openharness/videos
+      - oh-workspaces:/workspaces
+      - openharness-config:/root/.openharness
+
+  # ---- API switched to the Temporal backend ----
+  api:
+    environment:
+      - OH_SCHEDULER_BACKEND=temporal
+      - OH_TEMPORAL_HOST=temporal:7233
+      - OH_TEMPORAL_NAMESPACE=default
+      - OH_TEMPORAL_TASK_QUEUE=video-gen
+    depends_on:
+      temporal:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy

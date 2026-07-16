@@ -2,7 +2,7 @@
 
 **Change ID:** `phase3-multitenancy-temporal-lease`
 **Created:** 2026-07-14
-**Status:** Draft
+**Status:** Archived
 **Baseline:** `.qoder/plans/FastAPI_Hyperframes_Video_Service_3217f912.md` (一期 plan) + `openspec/specs/video-service-hardening.md` (基线，含 R1–R13)
 **Design source:** `.qoder/plans/Phase3_Multi-Tenancy_Temporal_Lease_3217f912.md`
 
@@ -89,7 +89,7 @@ Phase 2（`scale-multi-instance`，已归档）已让视频服务支持多副本
 - WS-B 复用 Phase 2 的 `Scheduler` 抽象，仅补真正实现，符合「不锁死后端」。
 - WS-C 复用 Phase 2 的 `worker_id`/`heartbeat_at`/`attempt` 列，新增 `lease_token`，向前兼容（历史任务 `lease_token=0` 视为无 fencing，新 claim 从 1 起）。
 - 三者保持 `result_backend=Redis`、复用 Redis abort key（WS-B 内取消信号）。
-- **WS-B × WS-C 后端耦合（须澄清）**：WS-C 的 lease fence 依赖 `recover_lost_tasks` 来 bump `lease_token`，而 reclaim 与心跳存活注册耦合在 Celery（`beat.py`）。`OH_SCHEDULER_BACKEND=temporal` 下若不跑 Celery 渲染 worker，R20 的严格保证不成立。须在 WS-B 设计中选择：声明 WS-C 仅限 Celery 后端，或把 reclaim 抽离为后端无关（详 Phase 3 计划 §8.2）。
+- **WS-B × WS-C 后端耦合（已拍板）**：WS-C 的 lease fence 依赖 `recover_lost_tasks` 来 bump `lease_token`，而 reclaim 与心跳存活注册耦合在 Celery（`beat.py`）。`OH_SCHEDULER_BACKEND=temporal` 下若不跑 Celery 渲染 worker，R20 的严格保证不成立。**已决策**：将 reclaim/watch-dog 抽象为与调度后端无关的独立组件，初版由 Celery 调用（行为不变），再让 Temporal 复用同一套逻辑，不固化「Strict Lease 仅支持 Celery」（详 Phase 3 计划 §8.2）。
 
 ## Success Criteria
 
@@ -110,3 +110,39 @@ Phase 2（`scale-multi-instance`，已归档）已让视频服务支持多副本
 | 三工作流并发改动互相干扰 | Med | Med | 独立 migration 版本号、独立 Phase、独立测试目录 |
 
 > **Redis 高可用边界**（同 Phase 2）：Redis 哨兵/集群不在本 change 范围；WS-C 租约仍以 Redis 为辅助，主可靠性来自 PG `lease_token` 自增（不依赖 Redis 即可 fence）。
+
+---
+
+## Archive Information
+
+**Archived:** 2026-07-15 16:59
+**Duration:** 1 day (created 2026-07-14)
+**Outcome:** Successfully implemented and verified
+
+### Specs Updated
+- `openspec/specs/video-service-hardening.md`
+  - ADDED R14 (tenant isolation) / R15 (API-key auth) / R16 (per-tenant quota) /
+    R17 (audit logging) / R18 (per-tenant rate limiting) / R19 (pluggable Temporal
+    scheduler) / R20 (strict lease + fencing token)
+  - MODIFIED R8 — upgraded from non-lease heartbeat to strict lease via `lease_token` fencing
+    (Phase 2 residual §11.7 risk now mitigated: preempted owner produces no valid side effect)
+
+### Files Modified
+- `service/app/models.py` — Tenant/ApiKey/Quota/AuditLog + `video_tasks.tenant_id`/`lease_token` + `video_lease_fence`
+- `service/app/middleware/auth.py`, `service/app/main.py` — X-API-Key → tenant, RLS binding
+- `service/app/quota.py`, `service/app/ratelimit.py`, `service/app/audit.py`, `service/app/deps.py`
+- `service/app/workers/temporal_worker.py`, `service/app/workers/scheduler.py` — TemporalScheduler (real)
+- `service/app/workers/render_pipeline.py` — shared render pipeline (`execute_video_render`)
+- `service/app/workers/tasks.py` — `claim()` returns `(claimed, token)`, terminal-write fence, `fence_artifact`
+- `service/app/workers/beat.py` — reclaim bumps `lease_token`, token-aware heartbeat
+- `service/app/storage/base.py` / `local.py` / `s3.py` — `save(lease_token=...)`, S3 `x-amz-meta-lease-token`
+- `service/alembic/versions/004_tenant.py`, `005_rls.py`, `006_lease_token.py`
+- `service/pyproject.toml` — `temporalio`, `slowapi`
+- `docker-compose.temporal.yml`, `docker/supervisord.temporal.conf`
+- `service/README.md` (new) — operations runbook (multitenancy / Temporal / lease)
+- Tests: `test_ws_a_*.py`, `test_ws_b_temporal.py`, `test_ws_c_fencing.py`, plus Phase 1/2 regression updates
+
+### Verification
+- `pytest tests/service` → **108 passed** (oh-e2e:latest, sqlite + fakeredis)
+- Phase 2 e2e / real `temporal-server` / multi-replica reclaim e2e DEFERRED (no Docker daemon /
+  temporal-server in sandbox) per Phase 2 convention; docker-compose artifacts committed for CI/manual run.

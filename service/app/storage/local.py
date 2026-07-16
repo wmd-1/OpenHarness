@@ -21,7 +21,10 @@ class LocalVideoStorage:
         self._root = root or settings.video_dir
         self._root.mkdir(parents=True, exist_ok=True)
 
-    def save(self, task_id: str, src: Path) -> str:
+    def save(self, task_id: str, src: Path, lease_token: int | None = None) -> str:
+        # lease_token is recorded as S3 object metadata by S3VideoStorage; the
+        # local backend has no metadata channel but honors the same fence via
+        # app.workers.tasks.fence_artifact (R20).
         key = f"{task_id}.mp4"
         dst = self._root / key
         shutil.copy2(str(src), str(dst))

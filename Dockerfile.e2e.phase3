@@ -1,0 +1,42 @@
+# Phase 3 (WS-A multi-tenancy + WS-B Temporal + WS-C strict lease/fencing)
+# end-to-end derived image.
+#
+# Built ON TOP of the scale-multi-instance `oh-e2e:latest` image, which already
+# ships the OpenHarness `oh` CLI, headless chrome, and every scale-tier runtime
+# dep the Phase 3 service inherits from R7-R13 (boto3/botocore, prometheus,
+# structlog, opentelemetry, psutil, asyncpg/psycopg, aiosqlite, celery, ...).
+# This image only:
+#   1. adds the two Phase 3-specific deps that oh-e2e lacks (temporalio, limits),
+#   2. re-overlays the CURRENT Phase 3 `service/` (newer than what oh-e2e baked),
+#   3. re-installs the faithful offline `oh` stub,
+#   4. extends the OH_ROLE entrypoint with the `seed` + `temporal-worker` roles.
+#
+# BASE_IMAGE can be overridden (e.g. to the raw base image) but defaults to
+# oh-e2e:latest so the Phase 3 deps are a thin, fast layer on top.
+ARG BASE_IMAGE=oh-e2e:latest
+FROM ${BASE_IMAGE}
+
+USER root
+
+# --- Phase 3-only runtime deps (oh-e2e already has the scale-tier ones) -----
+# temporalio : WS-B scheduler backend (real Temporal worker)
+# limits     : WS-A per-tenant rate limiter (limits.aio.storage, needs >=3)
+RUN /root/.openharness-venv/bin/pip install --no-cache-dir \
+    "temporalio==1.*" \
+    "limits==3.*"
+
+# --- Overlay the current Phase 3 service code (the code under test) ---------
+# (includes e2e_seed.py, so no separate COPY is needed for it.)
+COPY service /opt/oh-service
+
+# --- Faithful oh stub (no API key needed for e2e) ---------------------------
+COPY e2e/oh_stub.sh /usr/local/bin/oh-stub
+RUN chmod +x /usr/local/bin/oh-stub
+
+# --- OH_ROLE entrypoint (api / worker / beat / migrate / seed / temporal-worker / serve)
+RUN printf '#!/bin/bash\ncd /opt/oh-service || exit 1\ncp -a /opt/oh-skills-builtin/. /root/.openharness/skills/ 2>/dev/null || true\ncase "${OH_ROLE:-serve}" in\n  api) exec uvicorn app.main:app --host 0.0.0.0 --port "${OH_API_PORT:-8000}" --workers "${OH_API_WORKERS:-1}";;\n  worker) exec celery -A app.workers.celery_app.celery_app worker -l info -c "${OH_CELERY_CONCURRENCY:-4}" -Q "${OH_WORKER_QUEUES:-high,normal,low}";;\n  beat) exec celery -A app.workers.celery_app.celery_app beat -l info;;\n  temporal-worker) exec python -m app.workers.temporal_worker;;\n  migrate) exec alembic upgrade head;;\n  seed) exec python e2e_seed.py;;\n  serve|*) exec /usr/local/bin/oh-serve;;\nesac\n' > /usr/local/bin/oh-role \
+    && chmod +x /usr/local/bin/oh-role
+
+ENV PYTHONPATH=/opt/oh-service
+WORKDIR /opt/oh-service
+ENTRYPOINT ["/usr/local/bin/oh-role"]

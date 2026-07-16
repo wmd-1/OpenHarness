@@ -1,27 +1,28 @@
 """Worker liveness registration, heartbeat refresh, and lost-task recovery.
 
-This module implements the multi-instance *ownership / reclaim* machinery.
-It is deliberately **not** a strict lease/fencing protocol — it is a
-heartbeat + Redis-TTL heuristic (design source §11):
+This module implements the multi-instance *ownership / reclaim* machinery — a
+strict lease backed by a fencing token (R20):
 
 * each worker process advertises itself in Redis with a short TTL and refreshes
   it on a timer;
-* each worker refreshes the ``heartbeat_at`` column of the tasks it owns;
+* each worker refreshes the ``heartbeat_at`` column of the tasks it owns, but
+  only for tasks whose in-memory ``lease_token`` still matches the DB row
+  (so a reclaimed/stale owner cannot falsely appear alive);
 * a periodic ``recover_lost_tasks`` scan flips ``running`` tasks whose owner is
   no longer advertised AND whose heartbeat has gone stale back to ``retrying``,
-  re-enqueueing them exactly once (a single conditional UPDATE serialized by the
-  row lock guarantees idempotency — no double-reclaim, no double re-enqueue).
+  **bumping ``lease_token``** so the preempted owner's subsequent terminal and
+  artifact writes are fenced (R20). A single conditional UPDATE serialized by
+  the row lock guarantees idempotent re-enqueue.
 
-Because it is a heartbeat heuristic rather than a lease, a stale owner can in
-rare cases still write a terminal state; the *success guard* (R9, in
-``tasks._mark_succeeded``) prevents that write from clobbering a task another
-replica has since taken over. See design source §11.7 for the residual risks,
-which are explicitly out of scope for normal-crash acceptance.
+A preempted owner may still waste compute rendering locally, but it can produce
+**no valid side effect** (neither a terminal state nor a stored artifact): both
+are fenced by the ``lease_token`` carried on every effectful write.
 """
 from __future__ import annotations
 
 import logging
 import threading
+import uuid
 from datetime import datetime, timedelta
 from typing import Callable
 
@@ -88,14 +89,39 @@ def alive_worker_ids(redis_client: _redis.Redis) -> set[str] | None:
 # --- Heartbeat (DB) ---------------------------------------------------------
 
 def refresh_owned_heartbeats(
-    worker_id: str, db_session_factory: Callable | None = None
+    worker_id: str,
+    db_session_factory: Callable | None = None,
+    tokens: dict[str, int] | None = None,
 ) -> int:
-    """Refresh ``heartbeat_at`` for all RUNNING tasks owned by this worker.
+    """Refresh ``heartbeat_at`` for RUNNING tasks owned by this worker.
 
-    Returns the number of rows refreshed. The WHERE clause is scoped to this
-    worker_id, so it can never steal work from another replica.
+    Returns the number of rows refreshed. When ``tokens`` is supplied (the
+    per-task ``lease_token`` this worker holds, from ``tasks._active_tokens``),
+    each refresh is guarded by ``lease_token == :token`` so a reclaimed/stale
+    owner's heartbeat is rejected (R20: it cannot falsely appear alive). The
+    WHERE clause is scoped to ``worker_id`` so it can never steal work.
+
+    When ``tokens`` is ``None`` (legacy / non-fenced callers) the refresh is the
+    original worker-wide update.
     """
     make_session = db_session_factory or worker_tasks._sync_session
+    if tokens:
+        refreshed = 0
+        with make_session() as db:
+            for tid, tok in tokens.items():
+                res = db.execute(
+                    sa_update(VideoTask)
+                    .where(
+                        VideoTask.id == uuid.UUID(tid),
+                        VideoTask.worker_id == worker_id,
+                        VideoTask.status == TaskStatus.RUNNING,
+                        VideoTask.lease_token == tok,
+                    )
+                    .values(heartbeat_at=func.now())
+                )
+                refreshed += res.rowcount
+            db.commit()
+        return refreshed
     with make_session() as db:
         result = db.execute(
             sa_update(VideoTask)
@@ -163,6 +189,10 @@ def recover_lost_tasks(
                     status=TaskStatus.RETRYING,
                     worker_id=None,
                     attempt=VideoTask.attempt + 1,
+                    # Bump the lease token immediately so the preempted owner's
+                    # subsequent terminal/artifact writes are fenced (R20). The
+                    # new owner's own claim will bump it once more.
+                    lease_token=VideoTask.lease_token + 1,
                 )
             )
             res = db.execute(flip)
@@ -184,7 +214,7 @@ def _liveness_loop(stop: threading.Event, worker_id: str, interval: int = WORKER
     while not stop.is_set():
         register_worker(r, worker_id)
         try:
-            refresh_owned_heartbeats(worker_id)
+            refresh_owned_heartbeats(worker_id, tokens=worker_tasks._active_tokens)
         except Exception:
             logger.warning("Heartbeat refresh failed", exc_info=True)
         stop.wait(interval)

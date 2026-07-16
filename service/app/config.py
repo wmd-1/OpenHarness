@@ -62,6 +62,14 @@ class Settings(BaseSettings):
     # stub (not wired by default — placeholder for a future migration).
     scheduler_backend: str = "celery"
 
+    # --- Temporal (WS-B, optional scheduler backend) ---
+    # Only consulted when OH_SCHEDULER_BACKEND=temporal. The API enqueues renders
+    # as Temporal workflows; the temporal-worker process runs the workflow/activity.
+    temporal_host: str = "localhost:7233"
+    temporal_namespace: str = "default"
+    temporal_task_queue: str = "video-gen"
+    temporal_client_timeout: int = 5  # seconds
+
     # --- Worker queue tiers + concurrency cap (Phase 7) ---
     # Comma-separated queue names consumed by workers, ordered high -> low
     # priority. A task's ``priority`` column (1-10) maps to one of these tiers.
@@ -72,6 +80,22 @@ class Settings(BaseSettings):
 
     # --- API Key (optional) ---
     api_key: str | None = None
+
+    # --- Rate limiting (Phase 3, WS-A) ---
+    # Backend for the per-tenant submit rate limiter. A Redis URI is required
+    # in production so the count is shared globally across api×N replicas; use
+    # ``memory://`` for single-replica / test runs. Defaults to the broker URL.
+    rate_limit_storage_uri: str = ""
+
+    # --- Multi-tenancy auth (Phase 3, WS-A) ---
+    # When True, every external request MUST present a valid X-API-Key; missing
+    # or invalid keys are rejected with 401. When False (dev/default), unkeyed
+    # requests are scoped to the `system` tenant (no auth enforced yet).
+    auth_require_keys: bool = False
+    # Header that, when present, marks the request as a trusted internal caller
+    # and scopes it to the `system` tenant (bypassing X-API-Key). Intended to be
+    # set only by an ingress/proxy that strips it from external traffic.
+    auth_trusted_header: str | None = None
 
     # --- CORS ---
     # Comma-separated explicit origins. Empty => no CORS allowed.

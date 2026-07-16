@@ -36,7 +36,7 @@ def test_queue_for_priority_tiers():
     assert queue_for_priority(1) == "low"
 
 
-def test_celery_scheduler_enqueue_selects_queue(monkeypatch):
+async def test_celery_scheduler_enqueue_selects_queue(monkeypatch):
     captured = {}
 
     class _Res:
@@ -50,15 +50,15 @@ def test_celery_scheduler_enqueue_selects_queue(monkeypatch):
     monkeypatch.setattr(tasks_mod.generate_video_task, "apply_async", fake_apply_async)
 
     sched = CeleryScheduler()
-    rid = sched.enqueue("task-1", priority=9)
+    rid = await sched.enqueue("task-1", priority=9)
     assert rid == "celery-resp-id"
     assert captured["args"] == ("task-1",)
     assert captured["queue"] == "high"
 
-    sched.enqueue("task-2", priority=5)
+    await sched.enqueue("task-2", priority=5)
     assert captured["queue"] == "normal"
 
-    sched.enqueue("task-3", priority=2)
+    await sched.enqueue("task-3", priority=2)
     assert captured["queue"] == "low"
 
 
@@ -75,9 +75,13 @@ def test_get_scheduler_backend_switch(monkeypatch):
     assert isinstance(get_scheduler(), TemporalScheduler)
 
 
-def test_temporal_scheduler_is_disabled_placeholder():
+async def test_temporal_scheduler_requires_reachable_server(monkeypatch):
+    """WS-B: TemporalScheduler is now a real implementation. With no reachable
+    temporal-server it must fail fast (R19) instead of silently falling back to
+    Celery. Use a closed port so it errors immediately."""
+    monkeypatch.setattr(scheduler_mod.settings, "temporal_host", "127.0.0.1:1")
     sched = TemporalScheduler()
-    with pytest.raises(NotImplementedError):
-        sched.enqueue("tid")
-    with pytest.raises(NotImplementedError):
-        sched.cancel("cid")
+    with pytest.raises(Exception):
+        await sched.enqueue("tid")
+    with pytest.raises(Exception):
+        await sched.cancel("cid")

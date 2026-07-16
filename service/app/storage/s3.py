@@ -45,10 +45,16 @@ class S3VideoStorage:
             )
         self._client = client
 
-    def save(self, task_id: str, src: Path) -> str:
+    def save(self, task_id: str, src: Path, lease_token: int | None = None) -> str:
         key = f"{task_id}.mp4"
+        extra_args: dict = {}
+        if lease_token is not None:
+            # Record the strict-lease token as object metadata (R20) so a stale
+            # owner's artifact can be identified; the authoritative fence is in
+            # app.workers.tasks.fence_artifact.
+            extra_args["Metadata"] = {"lease-token": str(lease_token)}
         with open(src, "rb") as fh:
-            self._client.put_object(Bucket=self._bucket, Key=key, Body=fh.read())
+            self._client.put_object(Bucket=self._bucket, Key=key, Body=fh.read(), **extra_args)
         return key
 
     def open(self, key: str) -> tuple[BinaryIO, int]:
