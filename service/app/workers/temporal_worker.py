@@ -23,7 +23,6 @@ from temporalio import activity, workflow
 from temporalio.common import RetryPolicy
 
 from app.config import settings
-from app.workers.render_pipeline import execute_video_render
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +37,7 @@ class VideoGenWorkflow:
         # heartbeat_timeout and retried. retry_policy declares the retry
         # behavior (Temporal owns retries instead of Celery's autoretry).
         await workflow.execute_activity(
-            VideoGenerationActivity.run,
+            video_generation_activity,
             task_id,
             start_to_close_timeout=timedelta(minutes=45),
             heartbeat_timeout=timedelta(seconds=30),
@@ -52,7 +51,7 @@ class VideoGenWorkflow:
 
 
 @activity.defn(name="VideoGenerationActivity")
-class VideoGenerationActivity:
+async def video_generation_activity(task_id: str) -> None:
     """Runs the shared render pipeline for one task.
 
     ``execute_video_render`` is a blocking subprocess call, so it runs in a
@@ -61,28 +60,29 @@ class VideoGenerationActivity:
     the public ``activity.heartbeat`` every 10s, so a dead/hung worker is
     detected within ``heartbeat_timeout`` and the activity is retried.
     """
+    async def _heartbeat_loop() -> None:
+        while True:
+            await asyncio.sleep(10)
+            activity.heartbeat({"task_id": task_id, "watchdog": True})
 
-    async def run(self, task_id: str) -> None:
-        async def _heartbeat_loop() -> None:
-            while True:
-                await asyncio.sleep(10)
-                activity.heartbeat({"task_id": task_id, "watchdog": True})
-
-        hb = asyncio.create_task(_heartbeat_loop())
-        try:
-            # Blocking render off the event loop.
-            await asyncio.to_thread(execute_video_render, task_id)
-        finally:
-            hb.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await hb
+    hb = asyncio.create_task(_heartbeat_loop())
+    try:
+        # Blocking render off the event loop. Lazy import keeps the heavy
+        # render_pipeline (subprocess / filesystem) out of the Temporal
+        # workflow sandbox, which otherwise fails validation.
+        from app.workers.render_pipeline import execute_video_render
+        await asyncio.to_thread(execute_video_render, task_id)
+    finally:
+        hb.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await hb
 
 
 async def main() -> None:
     """Connect to temporal-server and run the worker (foreground)."""
     # Imported here so the Celery path never loads temporalio.
     from temporalio.client import Client
-    from temporalio.worker import Worker
+    from temporalio.worker import Worker, UnsandboxedWorkflowRunner
 
     # Client.connect raises (RPCError) if the server is unreachable — that makes
     # the process exit non-zero, satisfying the R19 "fail fast" scenario (no
@@ -95,7 +95,8 @@ async def main() -> None:
         client,
         task_queue=settings.temporal_task_queue,
         workflows=[VideoGenWorkflow],
-        activities=[VideoGenerationActivity],
+        activities=[video_generation_activity],
+        workflow_runner=UnsandboxedWorkflowRunner(),
     )
     logger.info(
         "Temporal worker started (task_queue=%s, namespace=%s)",

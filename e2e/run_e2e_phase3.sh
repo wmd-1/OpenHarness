@@ -3,8 +3,8 @@
 # end-to-end acceptance runner.
 #
 # Builds a dedicated Phase 3 e2e image via Dockerfile.e2e.phase3, which is
-# built DIRECTLY FROM the real OpenHarness base image (NOT from the
-# scale-multi-instance `oh-e2e:latest` intermediate image), and exercises the
+# built ON TOP OF the scale-multi-instance `oh-e2e:latest` image (reusing all
+# its runtime deps) and only adds the Phase 3-specific bits, then exercises the
 # two integration scenarios the unit suite cannot cover without Docker:
 #   1. cross-tenant isolation (X-API-Key auth + 404 on cross-tenant reads)
 #   2. strict lease / fencing under a real worker crash + reclaim
@@ -39,6 +39,18 @@ ok()   { log "PASS | $1"; pass=$((pass+1)); }
 bad()  { log "FAIL | $1"; fail=$((fail+1)); }
 check(){ if [ "$2" = "0" ]; then ok "$1"; else bad "$1"; fi; }
 
+# Dump worker/beat/temporal-worker logs + task status into the report so a
+# fencing failure is self-diagnosing instead of a blind "task never X".
+dump_diag() {
+  local id="${1:-}"
+  log "--- diag dump (task=$id) ---"
+  [ -n "$id" ] && log "status=$(task_status "$id") worker=$(task_worker "$id") token=$(task_token "$id")"
+  for svc in worker1 worker2 beat temporal-worker api1; do
+    log "### $svc logs (tail 25) ###"
+    docker logs --tail 25 "${PROJECT}-$svc" 2>&1 | tee -a "$REPORT" | sed 's/^/    /'
+  done
+}
+
 # --- HTTP / DB helpers (executed inside the api1 container) ----------------
 api_curl() { # method path [body] [extra-headers]
   local m="$1" p="$2" b="${3:-}" h="${4:-}"
@@ -60,7 +72,10 @@ db_query() { # sql -> first column of first row (trimmed)
 json_field(){ sed -n "s/.*\"$1\":\"\([^\"]*\)\".*/\1/p" | head -1; }
 
 submit()     { api_curl POST /v1/videos "{\"prompt\":\"$2\"}" "-H X-API-Key:$1" | json_field task_id; }
-task_status(){ db_query "SELECT status FROM video_tasks WHERE id='$1';"; }
+# NOTE: PostgreSQL returns the enum *member name* in UPPERCASE (RUNNING /
+# SUCCEEDED / RETRYING), while the shell comparisons below use lowercase.
+# Normalize here so wait_claimed / wait_db_status match regardless of case.
+task_status(){ db_query "SELECT status FROM video_tasks WHERE id='$1';" | tr '[:upper:]' '[:lower:]'; }
 task_worker(){ db_query "SELECT worker_id FROM video_tasks WHERE id='$1';"; }
 task_token() { db_query "SELECT lease_token FROM video_tasks WHERE id='$1';"; }
 
@@ -114,12 +129,12 @@ assert_fencing_crash() {
   log "--- lease fencing / reclaim (celery) ---"
   local TA fence_cnt ctok fTok fKey out
   TA=$(submit "$ALPHA_KEY" "fencing-celery task")
-  [ -z "$TA" ] && { bad "fencing: submit returned no task_id"; return 1; }
-  wait_claimed "$TA" 120 || { bad "fencing: task never claimed"; return 1; }
+  [ -z "$TA" ] && { bad "fencing: submit returned no task_id"; dump_diag "$TA"; return 1; }
+  wait_claimed "$TA" 150 || { bad "fencing: task never claimed"; dump_diag "$TA"; return 1; }
   log "fencing: task $TA claimed by $WORKER (token $(task_token "$TA"))"
   docker kill "${PROJECT}-$WORKER" >/dev/null 2>&1
   log "fencing: killed $WORKER; awaiting beat reclaim + peer re-claim"
-  wait_db_status "$TA" succeeded 300 || { bad "fencing: task never succeeded after reclaim"; return 1; }
+  wait_db_status "$TA" succeeded 300 || { bad "fencing: task never succeeded after reclaim"; dump_diag "$TA"; return 1; }
   ok "fencing: task succeeded after worker crash + reclaim (celery)"
 
   fence_cnt=$(db_query "SELECT count(*) FROM video_lease_fence WHERE task_id='$TA';")
@@ -139,8 +154,8 @@ assert_fencing_happy() { # backend label
   log "--- lease fencing (happy path, $backend) ---"
   local TA fence_cnt ctok fTok fKey out
   TA=$(submit "$ALPHA_KEY" "fencing-$backend task")
-  [ -z "$TA" ] && { bad "fencing: submit returned no task_id"; return 1; }
-  wait_db_status "$TA" succeeded 300 || { bad "fencing: task never succeeded ($backend)"; return 1; }
+  [ -z "$TA" ] && { bad "fencing: submit returned no task_id"; dump_diag "$TA"; return 1; }
+  wait_db_status "$TA" succeeded 300 || { bad "fencing: task never succeeded ($backend)"; dump_diag "$TA"; return 1; }
   ok "fencing: task succeeded ($backend)"
 
   fence_cnt=$(db_query "SELECT count(*) FROM video_lease_fence WHERE task_id='$TA';")
@@ -159,18 +174,27 @@ up_infra() {
   docker wait "${PROJECT}-migrate" >/dev/null 2>&1; local rc1=$?
   docker wait "${PROJECT}-seed"    >/dev/null 2>&1; local rc2=$?
   [ "$rc1" = "0" ] && [ "$rc2" = "0" ] || { bad "migrate/seed failed (rc=$rc1,$rc2)"; exit 1; }
+  # Defensive: drain any stale broker messages left over from a prior run so a
+  # freshly submitted task is claimed promptly (otherwise workers drain
+  # leftover messages first and the new task misses the claim window).
+  docker exec "${PROJECT}-redis" redis-cli flushall >/dev/null 2>&1 || true
 }
 
 run_backend() { # backend
   local backend="$1"
   export OH_SCHEDULER_BACKEND="$backend"
   log "===== Phase 3 e2e - $backend backend ====="
+  # Full isolation: drop volumes so each backend starts from a clean postgres
+  # (fresh tenant keys + schema) and an empty redis broker + minio. Otherwise
+  # stale video_tasks rows / broker messages from a prior run leak in and make
+  # the new task miss its claim window.
+  $COMPOSE down -v >/dev/null 2>&1 || true
   up_infra
   if [ "$backend" = "temporal" ]; then
     $COMPOSE up -d temporal 2>&1 | tail -2
     local t=0
     while [ $t -lt 120 ]; do
-      docker exec "${PROJECT}-temporal" temporal operator namespace list >/dev/null 2>&1 && break
+      docker exec "${PROJECT}-temporal" temporal operator namespace list --address temporal:7233 >/dev/null 2>&1 && break
       sleep 3; t=$((t+3))
     done
     $COMPOSE up -d api1 api2 temporal-worker 2>&1 | tail -3

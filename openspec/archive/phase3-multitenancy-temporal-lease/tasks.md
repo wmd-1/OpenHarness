@@ -79,7 +79,7 @@
 
 ## Phase 5: Integration & Polish
 
-- [x] 5.1 补建 e2e 跨租户隔离 + lease fencing 双跑用例（**已落地，不依赖 oh-e2e:latest**）：见 `docker-compose.e2e.phase3.yml` + `Dockerfile.e2e.phase3` + `e2e/run_e2e_phase3.sh`。`celery` 后端跑真实 worker 崩溃 + beat reclaim + 双副本 fencing；`temporal` 后端跑同套断言（隔离 + happy-path fencing）做双跑。运行：`bash e2e/run_e2e_phase3.sh`（需 Docker daemon）。
+- [x] 5.1 补建 e2e 跨租户隔离 + lease fencing 双跑用例（**已落地**）：见 `docker-compose.e2e.phase3.yml` + `Dockerfile.e2e.phase3`（`FROM oh-e2e:latest`，仅补装 temporalio+limits + 叠加最新 service）+ `e2e/run_e2e_phase3.sh`。`celery` 后端跑真实 worker 崩溃 + beat reclaim + 双副本 fencing；`temporal` 后端跑同套断言（隔离 + happy-path fencing）做双跑。运行：`bash e2e/run_e2e_phase3.sh`（需 Docker daemon）。
 - [x] 5.1b 已知限制：Temporal 后端的「worker 崩溃 + Activity 重试」复用 `running` 任务的 reclaim 尚未实现（`claim()` 仅认 `QUEUED`/`RETRYING`，无 beat 翻 `RETRYING`），故 Temporal 下只验证 happy-path fencing 接线，崩溃 + fencing 待补（见 `service/README.md` §6）。
 - [x] 5.2 `pytest tests/service` 全量验证（含 Phase 1/2 回归）— **108 passed**（oh-e2e:latest，sqlite + fakeredis）
 - [x] 5.3 文档同步（README / 运维手册：多租户接入、temporal 切换、lease 语义）— 新增 `service/README.md` 运维手册
